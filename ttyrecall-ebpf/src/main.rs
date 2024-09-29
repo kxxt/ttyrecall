@@ -13,9 +13,14 @@ mod vmlinux {
     include!("generated_vmlinux.rs");
 }
 
-use aya_ebpf::{cty::ssize_t, macros::fexit, programs::FExitContext, EbpfContext};
+use aya_ebpf::{
+    cty::{c_int, ssize_t},
+    macros::fexit,
+    programs::FExitContext,
+    EbpfContext,
+};
 use aya_log_ebpf::{info, trace};
-use vmlinux::{iov_iter, kiocb};
+use vmlinux::{tty_driver, tty_struct};
 
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
@@ -49,23 +54,51 @@ pub fn pty_unix98_remove(ctx: FExitContext) -> u32 {
 // TODO:
 // 1. send pty output to userspace
 // 2.
+// C
+// static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
 fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
     trace!(&ctx, "function pty_write called");
+    // Arguments
+    let _tty: *const tty_struct = unsafe { ctx.arg(0) };
+    let _buf: *const u8 = unsafe { ctx.arg(1) };
+    let _size: ssize_t = unsafe { ctx.arg(2) };
+    let ret: ssize_t = unsafe { ctx.arg(3) };
+    // Creds
     let pid = ctx.pid();
-    let iocb: *const kiocb = unsafe { ctx.arg(0) };
-    let iter: *const iov_iter = unsafe { ctx.arg(1) };
-    let ret: ssize_t = unsafe { ctx.arg(2) };
-    trace!(&ctx, "fexit pty_write, pid: {}, ret: {}", pid, ret);
+    let uid = ctx.uid();
+    trace!(
+        &ctx,
+        "fexit pty_write, pid: {}, ret: {}, uid: {}",
+        pid,
+        ret,
+        uid
+    );
     Ok(0)
 }
 
+// C
+// static int pty_unix98_install(struct tty_driver *driver, struct tty_struct *tty)
 fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     info!(&ctx, "function pty_unix98_install called");
+    // Arguments
+    let _driver: *const tty_driver = unsafe { ctx.arg(0) };
+    let _tty: *const tty_struct = unsafe { ctx.arg(1) };
+    let _ret: c_int = unsafe { ctx.arg(2) };
+    // Creds
+    let uid = ctx.uid();
     Ok(0)
 }
 
+// C
+// /* this is called once with whichever end is closed last */
+// static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     info!(&ctx, "function pty_unix98_remove called");
+    // Arguments
+    let _driver: *const tty_driver = unsafe { ctx.arg(0) };
+    let _tty: *const tty_struct = unsafe { ctx.arg(1) };
+    // Creds
+    let uid = ctx.uid();
     Ok(0)
 }
 

@@ -1,3 +1,3 @@
 #!/bin/sh
 
-aya-tool generate kiocb iov_iter > generated_vmlinux.rs
+aya-tool generate tty_driver tty_struct > generated_vmlinux.rs
