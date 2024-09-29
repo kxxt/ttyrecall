@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "path": "."
+        },
+        {
+            "path": "./ttyrecall-ebpf"
+        }
+    ],
+    "settings": {
+        "rust-analyzer.check.allTargets": false
+    },
+}
