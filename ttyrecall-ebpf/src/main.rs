@@ -15,6 +15,7 @@ mod vmlinux {
 
 use aya_ebpf::{
     cty::{c_int, ssize_t},
+    helpers::bpf_probe_read_kernel,
     macros::fexit,
     programs::FExitContext,
     EbpfContext,
@@ -82,10 +83,20 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     info!(&ctx, "function pty_unix98_install called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
-    let _tty: *const tty_struct = unsafe { ctx.arg(1) };
-    let _ret: c_int = unsafe { ctx.arg(2) };
+    let tty: *const tty_struct = unsafe { ctx.arg(1) };
+    let ret: c_int = unsafe { ctx.arg(2) };
+    if ret < 0 {
+        return Ok(1);
+    }
     // Creds
     let uid = ctx.uid();
+    // Read Info
+    // id: /dev/pts/{id}
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() };
+    info!(
+        &ctx,
+        "pty_unix98_install uid={}, id={}, ret={}", uid, id, ret
+    );
     Ok(0)
 }
 
@@ -96,9 +107,13 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     info!(&ctx, "function pty_unix98_remove called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
-    let _tty: *const tty_struct = unsafe { ctx.arg(1) };
+    let tty: *const tty_struct = unsafe { ctx.arg(1) };
     // Creds
     let uid = ctx.uid();
+    // Read Info
+    // id: /dev/pts/{id}
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() };
+    info!(&ctx, "pty_unix98_remove uid={}, id={}", uid, id,);
     Ok(0)
 }
 
