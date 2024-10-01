@@ -46,15 +46,15 @@ impl Daemon {
             warn!("failed to initialize eBPF logger: {}", e);
         }
         let btf = Btf::from_sys_fs()?;
-        let pty_write_prog: &mut FExit = bpf.program_mut("pty_write").unwrap().try_into()?;
-        pty_write_prog.load("pty_write", &btf)?;
-        pty_write_prog.attach()?;
         let install_prog: &mut FExit = bpf.program_mut("pty_unix98_install").unwrap().try_into()?;
         install_prog.load("pty_unix98_install", &btf)?;
         install_prog.attach()?;
         let remove_prog: &mut FExit = bpf.program_mut("pty_unix98_remove").unwrap().try_into()?;
         remove_prog.load("pty_unix98_remove", &btf)?;
         remove_prog.attach()?;
+        let pty_write_prog: &mut FExit = bpf.program_mut("pty_write").unwrap().try_into()?;
+        pty_write_prog.load("pty_write", &btf)?;
+        pty_write_prog.attach()?;
         info!("Waiting for Ctrl-C...");
         let event_ring = aya::maps::RingBuf::try_from(bpf.map_mut("EVENT_RING").unwrap())?;
         let mut async_fd = AsyncFd::new(event_ring)?;
