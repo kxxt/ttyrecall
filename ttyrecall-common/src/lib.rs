@@ -4,17 +4,23 @@ use core::mem::MaybeUninit;
 
 #[derive(Debug)]
 pub enum EventKind {
-    PtyWrite { len: usize },
     PtyInstall { comm: [u8; 16] },
     PtyRemove,
 }
 
 #[derive(Debug)]
-pub struct Event {
+pub struct ShortEvent {
     pub uid: u32,
     pub id: u32,
     pub time: u64,
     pub kind: EventKind,
+}
+
+#[derive(Debug)]
+pub struct WriteEvent {
+    pub id: u32,
+    pub time: u64,
+    pub len: usize,
     pub data: MaybeUninit<[u8; TTY_WRITE_MAX]>,
 }
 

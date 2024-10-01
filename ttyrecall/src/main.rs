@@ -5,7 +5,7 @@ use log::{debug, info, warn};
 use session::PtySessionManager;
 use tokio::io::unix::AsyncFd;
 use tokio::{select, signal};
-use ttyrecall_common::{Event, EventKind};
+use ttyrecall_common::{EventKind, ShortEvent, WriteEvent};
 
 mod session;
 
@@ -56,6 +56,7 @@ async fn main() -> color_eyre::Result<()> {
     let mut manager = PtySessionManager::new();
     loop {
         select! {
+            // TODO: This is probably not the best way to handle Ctrl+C...
             _ = signal::ctrl_c() => {
                 break;
             }
@@ -63,21 +64,31 @@ async fn main() -> color_eyre::Result<()> {
                 let mut guard = guard?;
                 let rb = guard.get_inner_mut();
                 while let Some(read) = rb.next() {
-                    let event: &Event = unsafe { &*(read.as_ptr().cast()) };
-                    match event.kind {
-                        EventKind::PtyWrite { len } => {
+                    const SHORT_EVENT_SIZE: usize = std::mem::size_of::<ShortEvent>();
+                    const WRITE_EVENT_SIZE: usize = std::mem::size_of::<WriteEvent>();
+                    match read.len() {
+                        SHORT_EVENT_SIZE => {
+                            let event: &ShortEvent = unsafe { &*(read.as_ptr().cast()) };
+                            match event.kind {
+                                EventKind::PtyInstall { comm } => {
+                                    manager.add_session(event.id, event.uid, event.time)?;
+                                },
+                                EventKind::PtyRemove => {
+                                    manager.remove_session(event.id);
+                                },
+                            }
+                        }
+                        WRITE_EVENT_SIZE => {
+                            let event: &WriteEvent = unsafe { &*(read.as_ptr().cast()) };
                             if manager.exists(event.id) {
                                 manager.write_to(event.id,
-                                    std::str::from_utf8(unsafe { &event.data.assume_init_ref()[..len] })?, event.time)?;
+                                    std::str::from_utf8(unsafe { &event.data.assume_init_ref()[..event.len] })?, event.time)?;
                             }
-                        },
-                        EventKind::PtyInstall { comm } => {
-                            manager.add_session(event.id, event.uid, event.time)?;
-                        },
-                        EventKind::PtyRemove => {
-                            manager.remove_session(event.id);
-                        },
+                        }
+                        _ => unreachable!()
                     }
+
+
                 }
                 guard.clear_ready();
             }

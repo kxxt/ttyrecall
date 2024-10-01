@@ -28,7 +28,7 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, trace};
-use ttyrecall_common::{Event, EventKind, TTY_WRITE_MAX};
+use ttyrecall_common::{EventKind, ShortEvent, WriteEvent, TTY_WRITE_MAX};
 use vmlinux::{tty_driver, tty_struct};
 
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
@@ -38,7 +38,7 @@ use vmlinux::{tty_driver, tty_struct};
 static EVENT_RING: RingBuf = RingBuf::with_byte_size(128 * 1024 * 1024, 0); // 128 MiB
 
 #[map]
-static EVENT_CACHE: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
+static EVENT_CACHE: PerCpuArray<WriteEvent> = PerCpuArray::with_max_entries(1, 0);
 
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
@@ -101,11 +101,10 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
         return Err(u32::MAX);
     };
     unsafe {
-        event.write(Event {
-            uid,
+        event.write(WriteEvent {
             id,
             time,
-            kind: EventKind::PtyWrite { len: 0 },
+            len: 0,
             data: MaybeUninit::uninit(),
         })
     };
@@ -116,7 +115,7 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
         Ok(slice) => slice.len().min(ret as usize),
         Err(_) => return Err(u32::MAX),
     };
-    unsafe { (*event).kind = EventKind::PtyWrite { len } }
+    unsafe { (*event).len = len }
     if let Err(_) = EVENT_RING.output(unsafe { &*event }, 0) {
         error!(&ctx, "Failed to output event!");
     }
@@ -141,16 +140,15 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
     let time = unsafe { bpf_ktime_get_tai_ns() };
     let comm = bpf_get_current_comm().unwrap();
-    let Some(mut reserved) = EVENT_RING.reserve::<Event>(0) else {
+    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
-    reserved.write(Event {
+    reserved.write(ShortEvent {
         uid,
         id,
         time,
         kind: EventKind::PtyInstall { comm },
-        data: MaybeUninit::uninit(),
     });
     reserved.submit(0);
     info!(
@@ -174,16 +172,15 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     // id: /dev/pts/{id}
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
     let time = unsafe { bpf_ktime_get_tai_ns() };
-    let Some(mut reserved) = EVENT_RING.reserve::<Event>(0) else {
+    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
-    reserved.write(Event {
+    reserved.write(ShortEvent {
         uid,
         id,
         time,
         kind: EventKind::PtyRemove,
-        data: MaybeUninit::uninit(),
     });
     reserved.submit(0);
     info!(&ctx, "pty_unix98_remove uid={}, id={}", uid, id,);
