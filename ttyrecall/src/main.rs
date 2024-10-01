@@ -1,17 +1,25 @@
 use aya::{include_bytes_aligned, Bpf};
 use aya::{programs::FExit, Btf};
 use aya_log::BpfLogger;
+use clap::Parser;
+use cli::Command;
+use color_eyre::eyre::bail;
 use log::{debug, info, warn};
 use session::PtySessionManager;
 use tokio::io::unix::AsyncFd;
 use tokio::{select, signal};
 use ttyrecall_common::{EventKind, ShortEvent, WriteEvent};
 
+mod cli;
 mod session;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     env_logger::init();
+    let cmdline = cli::CommandLine::parse();
+    let Command::Daemon { config: _ } = cmdline.command else {
+        bail!("Sorry, this feature hasn't been implemented.");
+    };
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/

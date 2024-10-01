@@ -848,6 +848,7 @@ dependencies = [
  "aya-log",
  "bstr",
  "chrono",
+ "clap",
  "color-eyre",
  "either",
  "env_logger",
