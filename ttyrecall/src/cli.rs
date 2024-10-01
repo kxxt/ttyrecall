@@ -16,9 +16,10 @@ pub enum Command {
     Daemon {
         #[clap(
             long,
-            help = "Path to configuration, /etc/ttyrecall/daemon.toml by default"
+            help = "Path to configuration file",
+            default_value = "/etc/ttyrecall/daemon.toml"
         )]
-        config: Option<PathBuf>,
+        config: String,
     },
     #[clap(about = "Play recorded file(s)")]
     Play {

@@ -1,0 +1,6 @@
+######################################
+# Configuration for ttyrecall daemon #
+######################################
+
+exclude_users = []
+root = "/var/lib/ttyrecall"
