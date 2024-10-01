@@ -1,11 +1,16 @@
-use aya::{programs::FExit, Btf};
 use aya::{include_bytes_aligned, Bpf};
+use aya::{programs::FExit, Btf};
 use aya_log::BpfLogger;
-use log::{info, warn, debug};
-use tokio::signal;
+use log::{debug, info, warn};
+use session::PtySessionManager;
+use tokio::io::unix::AsyncFd;
+use tokio::{select, signal};
+use ttyrecall_common::{Event, EventKind};
+
+mod session;
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() -> color_eyre::Result<()> {
     env_logger::init();
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
@@ -46,8 +51,38 @@ async fn main() -> Result<(), anyhow::Error> {
     remove_prog.load("pty_unix98_remove", &btf)?;
     remove_prog.attach()?;
     info!("Waiting for Ctrl-C...");
-    signal::ctrl_c().await?;
+    let event_ring = aya::maps::RingBuf::try_from(bpf.map_mut("EVENT_RING").unwrap())?;
+    let mut async_fd = AsyncFd::new(event_ring)?;
+    let mut manager = PtySessionManager::new();
+    loop {
+        select! {
+            _ = signal::ctrl_c() => {
+                break;
+            }
+            guard = async_fd.readable_mut() => {
+                let mut guard = guard?;
+                let rb = guard.get_inner_mut();
+                while let Some(read) = rb.next() {
+                    let event: &Event = unsafe { &*(read.as_ptr().cast()) };
+                    match event.kind {
+                        EventKind::PtyWrite { len } => {
+                            if manager.exists(event.id) {
+                                manager.write_to(event.id,
+                                    std::str::from_utf8(unsafe { &event.data.assume_init_ref()[..len] })?, event.time)?;
+                            }
+                        },
+                        EventKind::PtyInstall { comm } => {
+                            manager.add_session(event.id, event.uid, event.time)?;
+                        },
+                        EventKind::PtyRemove => {
+                            manager.remove_session(event.id);
+                        },
+                    }
+                }
+                guard.clear_ready();
+            }
+        }
+    }
     info!("Exiting...");
-
     Ok(())
 }

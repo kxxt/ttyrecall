@@ -13,15 +13,32 @@ mod vmlinux {
     include!("generated_vmlinux.rs");
 }
 
+use core::mem::MaybeUninit;
+
 use aya_ebpf::{
+    bpf_printk,
     cty::{c_int, ssize_t},
-    helpers::bpf_probe_read_kernel,
-    macros::fexit,
+    helpers::{
+        bpf_get_current_comm, bpf_ktime_get_tai_ns, bpf_probe_read_kernel,
+        bpf_probe_read_kernel_str_bytes,
+    },
+    macros::{fexit, map},
+    maps::{PerCpuArray, RingBuf},
     programs::FExitContext,
     EbpfContext,
 };
-use aya_log_ebpf::{info, trace};
+use aya_log_ebpf::{error, info, trace};
+use ttyrecall_common::{Event, EventKind, TTY_WRITE_MAX};
 use vmlinux::{tty_driver, tty_struct};
+
+// assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
+// will cause 2048 * 128 bytes to be accumlated on our buffer.
+// Let's reserve 512 times it for now. It should be enough.
+#[map]
+static EVENT_RING: RingBuf = RingBuf::with_byte_size(128 * 1024 * 1024, 0); // 128 MiB
+
+#[map]
+static EVENT_CACHE: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
@@ -60,20 +77,42 @@ pub fn pty_unix98_remove(ctx: FExitContext) -> u32 {
 fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
     trace!(&ctx, "function pty_write called");
     // Arguments
-    let _tty: *const tty_struct = unsafe { ctx.arg(0) };
-    let _buf: *const u8 = unsafe { ctx.arg(1) };
-    let _size: ssize_t = unsafe { ctx.arg(2) };
+    let tty: *const tty_struct = unsafe { ctx.arg(0) };
+    let buf: *const u8 = unsafe { ctx.arg(1) };
+    let size: ssize_t = unsafe { ctx.arg(2) };
     let ret: ssize_t = unsafe { ctx.arg(3) };
+    if ret < 0 {
+        return Err(u32::MAX);
+    }
     // Creds
     let pid = ctx.pid();
     let uid = ctx.uid();
-    trace!(
-        &ctx,
-        "fexit pty_write, pid: {}, ret: {}, uid: {}",
-        pid,
-        ret,
-        uid
-    );
+    // id: /dev/pts/{id}
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    let time = unsafe { bpf_ktime_get_tai_ns() };
+    let Some(event) = EVENT_CACHE.get_ptr_mut(0) else {
+        return Err(u32::MAX);
+    };
+    unsafe {
+        event.write(Event {
+            uid,
+            id,
+            time,
+            kind: EventKind::PtyWrite { len: 0 },
+            data: MaybeUninit::uninit(),
+        })
+    };
+    // FIXME: this assume_init_mut call is probably UB
+    let dest_slice =
+        &mut unsafe { (*event).data.assume_init_mut() }[..(ret as usize + 2).min(TTY_WRITE_MAX)];
+    let len = match unsafe { bpf_probe_read_kernel_str_bytes(buf, dest_slice) } {
+        Ok(slice) => slice.len().min(ret as usize),
+        Err(_) => return Err(u32::MAX),
+    };
+    unsafe { (*event).kind = EventKind::PtyWrite { len } }
+    if let Err(_) = EVENT_RING.output(unsafe { &*event }, 0) {
+        error!(&ctx, "Failed to output event!");
+    }
     Ok(0)
 }
 
@@ -92,7 +131,21 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     let uid = ctx.uid();
     // Read Info
     // id: /dev/pts/{id}
-    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() };
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    let time = unsafe { bpf_ktime_get_tai_ns() };
+    let comm = bpf_get_current_comm().unwrap();
+    let Some(mut reserved) = EVENT_RING.reserve::<Event>(0) else {
+        error!(&ctx, "Failed to reserve event!");
+        return Err(u32::MAX);
+    };
+    reserved.write(Event {
+        uid,
+        id,
+        time,
+        kind: EventKind::PtyInstall { comm },
+        data: MaybeUninit::uninit(),
+    });
+    reserved.submit(0);
     info!(
         &ctx,
         "pty_unix98_install uid={}, id={}, ret={}", uid, id, ret
@@ -112,7 +165,20 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     let uid = ctx.uid();
     // Read Info
     // id: /dev/pts/{id}
-    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() };
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    let time = unsafe { bpf_ktime_get_tai_ns() };
+    let Some(mut reserved) = EVENT_RING.reserve::<Event>(0) else {
+        error!(&ctx, "Failed to reserve event!");
+        return Err(u32::MAX);
+    };
+    reserved.write(Event {
+        uid,
+        id,
+        time,
+        kind: EventKind::PtyRemove,
+        data: MaybeUninit::uninit(),
+    });
+    reserved.submit(0);
     info!(&ctx, "pty_unix98_remove uid={}, id={}", uid, id,);
     Ok(0)
 }
