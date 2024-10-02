@@ -28,7 +28,7 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, trace};
-use ttyrecall_common::{EventKind, ShortEvent, WriteEvent, TTY_WRITE_MAX};
+use ttyrecall_common::{EventKind, ShortEvent, Size, WriteEvent, TTY_WRITE_MAX};
 use vmlinux::{tty_driver, tty_struct};
 
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
@@ -144,11 +144,18 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
+    let winsize = unsafe { bpf_probe_read_kernel(&(*tty).winsize).unwrap() };
     reserved.write(ShortEvent {
         uid,
         id,
         time,
-        kind: EventKind::PtyInstall { comm },
+        kind: EventKind::PtyInstall {
+            comm,
+            size: Size {
+                width: winsize.ws_col,
+                height: winsize.ws_row,
+            },
+        },
     });
     reserved.submit(0);
     info!(

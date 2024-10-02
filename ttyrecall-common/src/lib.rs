@@ -2,9 +2,15 @@
 
 use core::mem::MaybeUninit;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Size {
+    pub width: u16,
+    pub height: u16,
+}
+
 #[derive(Debug)]
 pub enum EventKind {
-    PtyInstall { comm: [u8; 16] },
+    PtyInstall { comm: [u8; 16], size: Size },
     PtyRemove,
 }
 
