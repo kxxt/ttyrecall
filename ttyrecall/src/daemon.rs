@@ -1,20 +1,26 @@
+use std::rc::Rc;
+
 use aya::{include_bytes_aligned, programs::FExit, Bpf, Btf};
 use aya_log::BpfLogger;
 use log::{debug, info, warn};
 use tokio::{io::unix::AsyncFd, select, signal};
 use ttyrecall_common::{EventKind, ShortEvent, WriteEvent};
 
-use crate::session::PtySessionManager;
+use crate::{manager::Manager, session::PtySessionManager};
 
 mod config;
 
 pub use config::DaemonConfig;
 
-pub struct Daemon {}
+pub struct Daemon {
+    manager: Rc<Manager>,
+}
 
 impl Daemon {
-    pub fn new(config: DaemonConfig) -> Self {
-        Self {}
+    pub fn new(config: DaemonConfig) -> color_eyre::Result<Self> {
+        Ok(Self {
+            manager: Rc::new(Manager::new(config.root, true)?),
+        })
     }
 
     pub async fn run(&self) -> color_eyre::Result<()> {
@@ -58,7 +64,7 @@ impl Daemon {
         info!("Waiting for Ctrl-C...");
         let event_ring = aya::maps::RingBuf::try_from(bpf.map_mut("EVENT_RING").unwrap())?;
         let mut async_fd = AsyncFd::new(event_ring)?;
-        let mut manager = PtySessionManager::new();
+        let mut manager = PtySessionManager::new(self.manager.clone());
         loop {
             select! {
                 // TODO: This is probably not the best way to handle Ctrl+C...
@@ -76,7 +82,7 @@ impl Daemon {
                                 let event: &ShortEvent = unsafe { &*(read.as_ptr().cast()) };
                                 match event.kind {
                                     EventKind::PtyInstall { comm } => {
-                                        manager.add_session(event.id, event.uid, event.time)?;
+                                        manager.add_session(event.id, event.uid, Self::escape_comm(comm), event.time, )?;
                                     },
                                     EventKind::PtyRemove => {
                                         manager.remove_session(event.id);
@@ -101,5 +107,16 @@ impl Daemon {
         }
         info!("Exiting...");
         Ok(())
+    }
+
+    /// Escaped path safe comm
+    fn escape_comm(comm: [u8; 16]) -> String {
+        String::from_utf8_lossy(
+            std::ffi::CStr::from_bytes_until_nul(&comm)
+                .unwrap()
+                .to_bytes(),
+        )
+        .into_owned()
+        .replace('/', "_")
     }
 }

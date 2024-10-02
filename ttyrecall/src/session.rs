@@ -1,17 +1,16 @@
 use std::{
     collections::HashMap,
-    ffi::CStr,
     fs::File,
     io::{BufWriter, Write},
+    rc::Rc,
     time::Duration,
 };
 
-use bstr::{BStr, BString};
-use chrono::Datelike;
 use color_eyre::eyre::bail;
-use either::Either;
-use nix::unistd::{Uid, User};
+use nix::unistd::Uid;
 use serde::Serialize;
+
+use crate::manager::Manager;
 
 /// A running pty session
 #[derive(Debug)]
@@ -21,25 +20,18 @@ struct PtySession {
     uid: Uid,
     counter: u64,
     start_ns: u64,
-    comm: BString,
+    comm: String,
 }
 
 impl PtySession {
-    pub fn new(pty_id: u32, uid: u32, start_ns: u64) -> color_eyre::Result<Self> {
-        let time = chrono::Local::now();
-        let filename = format!(
-            "{year}-{month:02}-{day:02}-pty{pty_id}-{user}.log",
-            year = time.year(),
-            month = time.month(),
-            day = time.day(),
-            user = User::from_uid(Uid::from_raw(uid))
-                .map(|u| u
-                    .map(|u| Either::Left(u.name))
-                    .unwrap_or_else(|| Either::Right(uid)))
-                .unwrap_or_else(|_| Either::Right(uid))
-        );
-        // FIXME: handle existent file
-        let file = File::create_new(filename)?;
+    pub fn new(
+        manager: &Manager,
+        pty_id: u32,
+        uid: u32,
+        comm: String,
+        start_ns: u64,
+    ) -> color_eyre::Result<Self> {
+        let file = manager.create_recording_file(uid.into(), pty_id, &comm)?;
         let mut writer = BufWriter::new(file);
         writeln!(
             writer,
@@ -51,7 +43,7 @@ impl PtySession {
             uid: Uid::from_raw(uid),
             counter: 0,
             start_ns,
-            comm: BString::default(), // TODO
+            comm,
         })
     }
 }
@@ -63,22 +55,34 @@ impl Drop for PtySession {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PtySessionManager {
     sessions: HashMap<u32, PtySession>,
+    manager: Rc<Manager>,
 }
 
 impl PtySessionManager {
-    pub fn new() -> Self {
-        Default::default()
+    pub fn new(manager: Rc<Manager>) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            manager,
+        }
     }
 
-    pub fn add_session(&mut self, pty_id: u32, uid: u32, start_ns: u64) -> color_eyre::Result<()> {
+    pub fn add_session(
+        &mut self,
+        pty_id: u32,
+        uid: u32,
+        comm: String,
+        start_ns: u64,
+    ) -> color_eyre::Result<()> {
         if self.sessions.contains_key(&pty_id) {
             bail!("A pty session numbered {pty_id} already exists!");
         }
-        self.sessions
-            .insert(pty_id, PtySession::new(pty_id, uid, start_ns)?);
+        self.sessions.insert(
+            pty_id,
+            PtySession::new(&self.manager, pty_id, uid, comm, start_ns)?,
+        );
         Ok(())
     }
 
