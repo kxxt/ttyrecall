@@ -29,7 +29,7 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, trace};
 use ttyrecall_common::{EventKind, ShortEvent, Size, WriteEvent, TTY_WRITE_MAX};
-use vmlinux::{tty_driver, tty_struct};
+use vmlinux::{tty_driver, tty_struct, winsize};
 
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
 // will cause 2048 * 128 bytes to be accumlated on our buffer.
@@ -59,6 +59,14 @@ pub fn pty_unix98_install(ctx: FExitContext) -> u32 {
 #[fexit(function = "pty_unix98_remove")]
 pub fn pty_unix98_remove(ctx: FExitContext) -> u32 {
     match try_pty_unix98_remove(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+#[fexit(function = "pty_resize")]
+pub fn pty_resize(ctx: FExitContext) -> u32 {
+    match try_pty_resize(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
@@ -191,6 +199,47 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     });
     reserved.submit(0);
     info!(&ctx, "pty_unix98_remove uid={}, id={}", uid, id,);
+    Ok(0)
+}
+
+// C
+// static int pty_resize(struct tty_struct *tty,  struct winsize *ws)
+fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
+    info!(&ctx, "function pty_resize called");
+    // Arguments
+    let tty: *const tty_struct = unsafe { ctx.arg(0) };
+    let ws: *const winsize = unsafe { ctx.arg(1) };
+    let ret: c_int = unsafe { ctx.arg(2) };
+    if ret < 0 {
+        return Ok(1);
+    }
+    // Creds
+    let uid = ctx.uid();
+    // Read Info
+    // id: /dev/pts/{id}
+    let time = unsafe { bpf_ktime_get_tai_ns() };
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    let winsize = unsafe { bpf_probe_read_kernel(ws).unwrap() };
+    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
+        error!(&ctx, "Failed to reserve event!");
+        return Err(u32::MAX);
+    };
+    reserved.write(ShortEvent {
+        uid,
+        id,
+        time,
+        kind: EventKind::PtyResize {
+            size: Size {
+                width: winsize.ws_col,
+                height: winsize.ws_row,
+            },
+        },
+    });
+    reserved.submit(0);
+    info!(
+        &ctx,
+        "pty_resize tty{} to {}x{}", id, winsize.ws_col, winsize.ws_row
+    );
     Ok(0)
 }
 

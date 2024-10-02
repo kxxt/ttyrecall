@@ -90,6 +90,22 @@ impl PtySessionManager {
         Ok(())
     }
 
+    pub fn resize_session(
+        &mut self,
+        pty_id: u32,
+        time_ns: u64,
+        size: Size,
+    ) -> color_eyre::Result<()> {
+        let Some(session) = self.sessions.get_mut(&pty_id) else {
+            bail!("Pty session {pty_id} does not exist");
+        };
+        let diff_secs = Duration::from_nanos(time_ns - session.start_ns).as_secs_f64();
+        let mut ser = serde_json::Serializer::new(&mut session.writer);
+        (diff_secs, "r", format!("{}x{}", size.width, size.height)).serialize(&mut ser)?;
+        writeln!(session.writer)?;
+        Ok(())
+    }
+
     pub fn write_to(&mut self, id: u32, content: &str, time_ns: u64) -> color_eyre::Result<()> {
         let Some(session) = self.sessions.get_mut(&id) else {
             bail!("Pty session {id} does not exist");

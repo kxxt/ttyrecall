@@ -58,6 +58,9 @@ impl Daemon {
         let remove_prog: &mut FExit = bpf.program_mut("pty_unix98_remove").unwrap().try_into()?;
         remove_prog.load("pty_unix98_remove", &btf)?;
         remove_prog.attach()?;
+        let pty_resize_prog: &mut FExit = bpf.program_mut("pty_resize").unwrap().try_into()?;
+        pty_resize_prog.load("pty_resize", &btf)?;
+        pty_resize_prog.attach()?;
         let pty_write_prog: &mut FExit = bpf.program_mut("pty_write").unwrap().try_into()?;
         pty_write_prog.load("pty_write", &btf)?;
         pty_write_prog.attach()?;
@@ -87,6 +90,9 @@ impl Daemon {
                                     EventKind::PtyRemove => {
                                         manager.remove_session(event.id);
                                     },
+                                    EventKind::PtyResize { size } => {
+                                        manager.resize_session(event.id, event.time, size)?;
+                                    }
                                 }
                             }
                             WRITE_EVENT_SIZE => {

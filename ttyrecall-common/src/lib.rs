@@ -11,6 +11,7 @@ pub struct Size {
 #[derive(Debug)]
 pub enum EventKind {
     PtyInstall { comm: [u8; 16], size: Size },
+    PtyResize { size: Size },
     PtyRemove,
 }
 
