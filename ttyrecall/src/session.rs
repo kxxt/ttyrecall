@@ -31,14 +31,13 @@ impl PtySession {
         uid: u32,
         comm: String,
         start_ns: u64,
-        size: Size,
     ) -> color_eyre::Result<Self> {
         let file = manager.create_recording_file(uid.into(), pty_id, &comm)?;
         let mut writer = BufWriter::new(file);
         writeln!(
             writer,
             r#"{{"version": 2, "width": {}, "height": {}, "timestamp": 1504467315, "title": "Demo", "env": {{"TERM": "xterm-256color", "SHELL": "/bin/zsh"}}}}"#,
-            size.width, size.height
+            0, 0
         )?;
         Ok(Self {
             writer,
@@ -78,14 +77,13 @@ impl PtySessionManager {
         uid: u32,
         comm: String,
         start_ns: u64,
-        size: Size,
     ) -> color_eyre::Result<()> {
         if self.sessions.contains_key(&pty_id) {
             bail!("A pty session numbered {pty_id} already exists!");
         }
         self.sessions.insert(
             pty_id,
-            PtySession::new(&self.manager, pty_id, uid, comm, start_ns, size)?,
+            PtySession::new(&self.manager, pty_id, uid, comm, start_ns)?,
         );
         Ok(())
     }

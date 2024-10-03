@@ -88,8 +88,8 @@ impl Daemon {
                             SHORT_EVENT_SIZE => {
                                 let event: &ShortEvent = unsafe { &*(read.as_ptr().cast()) };
                                 match event.kind {
-                                    EventKind::PtyInstall { comm, size } => {
-                                        manager.add_session(event.id, event.uid, Self::escape_comm(comm), event.time, size)?;
+                                    EventKind::PtyInstall { comm } => {
+                                        manager.add_session(event.id, event.uid, Self::escape_comm(comm), event.time)?;
                                     },
                                     EventKind::PtyRemove => {
                                         manager.remove_session(event.id);
