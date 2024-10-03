@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::Utc;
 use color_eyre::eyre::bail;
 use nix::unistd::Uid;
 use serde::Serialize;
@@ -22,6 +23,8 @@ struct PtySession {
     counter: u64,
     start_ns: u64,
     comm: String,
+    /// Wait for the first resize event to correctly populate the width/height metadata.
+    staged_events: Option<Vec<StagedEvent>>,
 }
 
 impl PtySession {
@@ -33,12 +36,7 @@ impl PtySession {
         start_ns: u64,
     ) -> color_eyre::Result<Self> {
         let file = manager.create_recording_file(uid.into(), pty_id, &comm)?;
-        let mut writer = BufWriter::new(file);
-        writeln!(
-            writer,
-            r#"{{"version": 2, "width": {}, "height": {}, "timestamp": 1504467315, "title": "Demo", "env": {{"TERM": "xterm-256color", "SHELL": "/bin/zsh"}}}}"#,
-            0, 0
-        )?;
+        let writer = BufWriter::new(file);
         Ok(Self {
             writer,
             pty_id,
@@ -46,12 +44,68 @@ impl PtySession {
             counter: 0,
             start_ns,
             comm,
+            staged_events: Some(Vec::new()),
         })
+    }
+
+    /// Write all staged events and remove staging buffer
+    pub fn flush_staged(&mut self) -> color_eyre::Result<()> {
+        for e in self.staged_events.take().unwrap() {
+            match e {
+                StagedEvent::Metadata { size, timestamp } => {
+                    writeln!(
+                        self.writer,
+                        r#"{{"version": 2, "width": {}, "height": {}, "timestamp": {}, "env": {{"TERM": "xterm-256color"}}}}"#,
+                        size.width, size.height, timestamp
+                    )?;
+                }
+                StagedEvent::Write { content, time_ns } => {
+                    self.write(&content, time_ns)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn stage_event(&mut self, value: StagedEvent) {
+        if let Some(staged) = self.staged_events.as_mut() {
+            staged.push(value);
+        } else {
+            panic!("No staging buffer");
+        }
+    }
+
+    pub fn staged_event_count(&self) -> Option<usize> {
+        self.staged_events.as_ref().map(|e| e.len())
+    }
+
+    pub fn write(&mut self, content: &str, time_ns: u64) -> color_eyre::Result<()> {
+        let diff_secs = Duration::from_nanos(time_ns - self.start_ns).as_secs_f64();
+        let mut ser = serde_json::Serializer::new(&mut self.writer);
+        (diff_secs, "o", content).serialize(&mut ser)?;
+        writeln!(self.writer)?;
+        Ok(())
+    }
+
+    pub fn resize(&mut self, size: Size, time_ns: u64) -> color_eyre::Result<()> {
+        let diff_secs = Duration::from_nanos(time_ns - self.start_ns).as_secs_f64();
+        let mut ser = serde_json::Serializer::new(&mut self.writer);
+        (diff_secs, "r", format!("{}x{}", size.width, size.height)).serialize(&mut ser)?;
+        writeln!(self.writer)?;
+        Ok(())
+    }
+
+    pub fn first_staged_event_mut(&mut self) -> Option<&mut StagedEvent> {
+        self.staged_events.as_mut().and_then(|e| e.first_mut())
     }
 }
 
 impl Drop for PtySession {
     fn drop(&mut self) {
+        // flush all staged events
+        if self.staged_events.is_some() {
+            self.flush_staged().unwrap();
+        }
         // By default BufWriter will ignore errors when dropping.
         self.writer.flush().unwrap();
     }
@@ -62,6 +116,8 @@ pub struct PtySessionManager {
     sessions: HashMap<u32, PtySession>,
     manager: Rc<Manager>,
 }
+
+const STAGED_EVENT_MAX: usize = 50;
 
 impl PtySessionManager {
     pub fn new(manager: Rc<Manager>) -> Self {
@@ -81,10 +137,12 @@ impl PtySessionManager {
         if self.sessions.contains_key(&pty_id) {
             bail!("A pty session numbered {pty_id} already exists!");
         }
-        self.sessions.insert(
-            pty_id,
-            PtySession::new(&self.manager, pty_id, uid, comm, start_ns)?,
-        );
+        let mut session = PtySession::new(&self.manager, pty_id, uid, comm, start_ns)?;
+        session.stage_event(StagedEvent::Metadata {
+            size: Size::default(),
+            timestamp: Utc::now().timestamp(),
+        });
+        self.sessions.insert(pty_id, session);
         Ok(())
     }
 
@@ -97,10 +155,19 @@ impl PtySessionManager {
         let Some(session) = self.sessions.get_mut(&pty_id) else {
             bail!("Pty session {pty_id} does not exist");
         };
-        let diff_secs = Duration::from_nanos(time_ns - session.start_ns).as_secs_f64();
-        let mut ser = serde_json::Serializer::new(&mut session.writer);
-        (diff_secs, "r", format!("{}x{}", size.width, size.height)).serialize(&mut ser)?;
-        writeln!(session.writer)?;
+        if size.is_zero() {
+            // Ignore resize event with zero size
+            return Ok(());
+        }
+        if let Some(first) = session.first_staged_event_mut() {
+            match first {
+                StagedEvent::Metadata { size: psize, .. } => *psize = size,
+                _ => unreachable!(),
+            }
+            session.flush_staged()?;
+        } else {
+            session.resize(size, time_ns)?;
+        }
         Ok(())
     }
 
@@ -108,10 +175,18 @@ impl PtySessionManager {
         let Some(session) = self.sessions.get_mut(&id) else {
             bail!("Pty session {id} does not exist");
         };
-        let diff_secs = Duration::from_nanos(time_ns - session.start_ns).as_secs_f64();
-        let mut ser = serde_json::Serializer::new(&mut session.writer);
-        (diff_secs, "o", content).serialize(&mut ser)?;
-        writeln!(session.writer)?;
+        if let Some(cnt) = session.staged_event_count() {
+            if cnt < STAGED_EVENT_MAX {
+                session.stage_event(StagedEvent::Write {
+                    content: content.to_owned(),
+                    time_ns,
+                });
+            } else {
+                session.flush_staged()?;
+            }
+        } else {
+            session.write(content, time_ns)?;
+        }
         Ok(())
     }
 
@@ -122,6 +197,12 @@ impl PtySessionManager {
     pub fn remove_session(&mut self, id: u32) {
         self.sessions.remove(&id);
     }
+}
+
+#[derive(Debug)]
+enum StagedEvent {
+    Metadata { size: Size, timestamp: i64 },
+    Write { content: String, time_ns: u64 },
 }
 
 #[cfg(test)]

@@ -2,10 +2,16 @@
 
 use core::mem::MaybeUninit;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Size {
     pub width: u16,
     pub height: u16,
+}
+
+impl Size {
+    pub fn is_zero(&self) -> bool {
+        self.width == 0 && self.height == 0
+    }
 }
 
 #[derive(Debug)]

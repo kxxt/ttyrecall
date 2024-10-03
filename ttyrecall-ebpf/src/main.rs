@@ -210,7 +210,6 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
 // C
 // static int pty_resize(struct tty_struct *tty,  struct winsize *ws)
 fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
-    info!(&ctx, "function pty_resize called");
     // Arguments
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let ws: *const winsize = unsafe { ctx.arg(1) };
@@ -265,7 +264,6 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
     // id: /dev/pts/{id}
     let time = unsafe { bpf_ktime_get_tai_ns() };
     let driver_major = unsafe { bpf_probe_read_kernel(&(*(*tty).driver).major).unwrap() };
-    info!(&ctx, "function tty_do_resize major = {}", driver_major);
     // According to https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
     // pty slaves has a major of 136-143
     if !(136..=143).contains(&driver_major) {
