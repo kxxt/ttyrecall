@@ -12,3 +12,12 @@ is based on text instead of screenshots?
 
 Before adding AI features(if I ever want to do that), `ttyrecall` will focus on collecting and archiving terminal outputs.
 So it can be considered as [asciinema](https://asciinema.org/), but always on.
+
+# License
+
+Please see the license of the individual crates.
+
+- The eBPF module is licensed under `GPL-2.0-or-later`.
+- The xtask crate is also licensed under `GPL-2.0-or-later`.
+- The main binary, `ttyrecall`, is licensed under `AGPL-3.0-or-later`.
+- The common library, `ttyrecall-common`, is licensed under `MIT-0`(MIT No Attribution).
