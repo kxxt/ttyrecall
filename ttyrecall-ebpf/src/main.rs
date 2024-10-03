@@ -72,6 +72,14 @@ pub fn pty_resize(ctx: FExitContext) -> u32 {
     }
 }
 
+#[fexit(function = "tty_do_resize")]
+pub fn tty_do_resize(ctx: FExitContext) -> u32 {
+    match try_tty_do_resize(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
 // TODO:
 // hook
 // - devpts_pty_new: node creation in /dev/pts
@@ -202,6 +210,8 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     Ok(0)
 }
 
+// pty *master side* resize
+// only pty master implements resize in tty_operations
 // C
 // static int pty_resize(struct tty_struct *tty,  struct winsize *ws)
 fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
@@ -238,7 +248,55 @@ fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
     reserved.submit(0);
     info!(
         &ctx,
-        "pty_resize tty{} to {}x{}", id, winsize.ws_col, winsize.ws_row
+        "pty_resize master{} to {}x{}", id, winsize.ws_col, winsize.ws_row
+    );
+    Ok(0)
+}
+
+// tty default resize
+// C
+//  int tty_do_resize(struct tty_struct *tty, struct winsize *ws)
+fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
+    // Arguments
+    let tty: *const tty_struct = unsafe { ctx.arg(0) };
+    let ws: *const winsize = unsafe { ctx.arg(1) };
+    let ret: c_int = unsafe { ctx.arg(2) };
+    if ret < 0 {
+        return Ok(1);
+    }
+    // Creds
+    let uid = ctx.uid();
+    // Read Info
+    // id: /dev/pts/{id}
+    let time = unsafe { bpf_ktime_get_tai_ns() };
+    let driver_major = unsafe { bpf_probe_read_kernel(&(*(*tty).driver).major).unwrap() };
+    info!(&ctx, "function tty_do_resize major = {}", driver_major);
+    // According to https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
+    // pty slaves has a major of 136-143
+    if !(136..=143).contains(&driver_major) {
+        return Ok(2);
+    }
+    let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    let winsize = unsafe { bpf_probe_read_kernel(ws).unwrap() };
+    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
+        error!(&ctx, "Failed to reserve event!");
+        return Err(u32::MAX);
+    };
+    reserved.write(ShortEvent {
+        uid,
+        id,
+        time,
+        kind: EventKind::PtyResize {
+            size: Size {
+                width: winsize.ws_col,
+                height: winsize.ws_row,
+            },
+        },
+    });
+    reserved.submit(0);
+    info!(
+        &ctx,
+        "pty_resize slave{} to {}x{}", id, winsize.ws_col, winsize.ws_row
     );
     Ok(0)
 }

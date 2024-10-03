@@ -61,6 +61,10 @@ impl Daemon {
         let pty_resize_prog: &mut FExit = bpf.program_mut("pty_resize").unwrap().try_into()?;
         pty_resize_prog.load("pty_resize", &btf)?;
         pty_resize_prog.attach()?;
+        let tty_do_resize_prog: &mut FExit =
+            bpf.program_mut("tty_do_resize").unwrap().try_into()?;
+        tty_do_resize_prog.load("tty_do_resize", &btf)?;
+        tty_do_resize_prog.attach()?;
         let pty_write_prog: &mut FExit = bpf.program_mut("pty_write").unwrap().try_into()?;
         pty_write_prog.load("pty_write", &btf)?;
         pty_write_prog.attach()?;
@@ -91,7 +95,9 @@ impl Daemon {
                                         manager.remove_session(event.id);
                                     },
                                     EventKind::PtyResize { size } => {
-                                        manager.resize_session(event.id, event.time, size)?;
+                                        if manager.exists(event.id) {
+                                            manager.resize_session(event.id, event.time, size)?;
+                                        }
                                     }
                                 }
                             }
