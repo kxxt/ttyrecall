@@ -4,3 +4,8 @@
 
 exclude_users = []
 root = "/var/lib/ttyrecall"
+# Compression
+# - none        : no compression
+# - zstd        : zstd with default compression level
+# - zstd:$level : zstd with custom compression level
+compress = "zstd"

@@ -14,18 +14,21 @@ use nix::{
     unistd::{chown, Gid, Group, Uid},
 };
 
+use crate::daemon::Compress;
+
 /// A manager for on-disk recordings
 #[derive(Debug)]
 pub struct Manager {
     root: PathBuf,
     group: Option<Group>,
+    pub compress: Compress,
 }
 
 impl Manager {
     /// Create a new manager,
     /// It could be opened in exclusive mode to ensure two daemons won't step
     /// on each other's toes.
-    pub fn new(dir: String, exclusive: bool) -> color_eyre::Result<Self> {
+    pub fn new(dir: String, exclusive: bool, compress: Compress) -> color_eyre::Result<Self> {
         let root = PathBuf::from(dir);
         let meta = root
             .metadata()
@@ -50,7 +53,11 @@ impl Manager {
         // Set umask to 007
         umask(Mode::S_IXOTH | Mode::S_IROTH | Mode::S_IWOTH);
         // TODO: Maybe check permissions
-        Ok(Self { root, group })
+        Ok(Self {
+            root,
+            group,
+            compress,
+        })
     }
 
     pub fn create_recording_file(
@@ -63,14 +70,15 @@ impl Manager {
 
         let path_for_recording = |counter: usize| {
             self.root.join(format!(
-                "{uid}/{year}/{month:02}/{day:02}/{comm}-pty{pty_id}-{hour:02}:{minte:02}{dash}{cnt}.cast",
+                "{uid}/{year}/{month:02}/{day:02}/{comm}-pty{pty_id}-{hour:02}:{minte:02}{dash}{cnt}.cast{compress}",
                 year = now.year(),
                 month = now.month(),
                 day = now.day(),
                 hour = now.hour(),
                 minte = now.minute(),
                 dash = if counter > 0 { "-" } else { "" },
-                cnt = if counter > 0 { Cow::Owned(counter.to_string()) } else { Cow::Borrowed("") }
+                cnt = if counter > 0 { Cow::Owned(counter.to_string()) } else { Cow::Borrowed("") },
+                compress = if let Compress::Zstd(_) = self.compress { ".zst" } else { "" }
             ))
         };
         for counter in 0..32768 {

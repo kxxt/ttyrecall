@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Debug,
     fs::File,
     io::{BufWriter, Write},
     rc::Rc,
@@ -12,12 +13,11 @@ use nix::unistd::Uid;
 use serde::Serialize;
 use ttyrecall_common::Size;
 
-use crate::manager::Manager;
+use crate::{daemon::Compress, manager::Manager};
 
 /// A running pty session
-#[derive(Debug)]
 struct PtySession {
-    writer: BufWriter<File>,
+    writer: Box<dyn Write>,
     pty_id: u32,
     uid: Uid,
     counter: u64,
@@ -36,7 +36,13 @@ impl PtySession {
         start_ns: u64,
     ) -> color_eyre::Result<Self> {
         let file = manager.create_recording_file(uid.into(), pty_id, &comm)?;
-        let writer = BufWriter::new(file);
+        let writer: Box<dyn Write> = match manager.compress {
+            Compress::None => Box::new(BufWriter::new(file)),
+            // zstd has its own internal buffer
+            Compress::Zstd(level) => {
+                Box::new(zstd::Encoder::new(file, level.unwrap_or(0))?.auto_finish())
+            }
+        };
         Ok(Self {
             writer,
             pty_id,
@@ -111,7 +117,6 @@ impl Drop for PtySession {
     }
 }
 
-#[derive(Debug)]
 pub struct PtySessionManager {
     sessions: HashMap<u32, PtySession>,
     manager: Rc<Manager>,

@@ -10,7 +10,7 @@ use crate::{manager::Manager, session::PtySessionManager};
 
 mod config;
 
-pub use config::DaemonConfig;
+pub use config::*;
 
 pub struct Daemon {
     manager: Rc<Manager>,
@@ -19,7 +19,7 @@ pub struct Daemon {
 impl Daemon {
     pub fn new(config: DaemonConfig) -> color_eyre::Result<Self> {
         Ok(Self {
-            manager: Rc::new(Manager::new(config.root, true)?),
+            manager: Rc::new(Manager::new(config.root, true, config.compress)?),
         })
     }
 
