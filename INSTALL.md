@@ -2,31 +2,20 @@
 
 ## Prerequisites
 
-1. Install bpf-linker: `cargo install bpf-linker`
+- Rust toolchain (optional)
+- Rust nightly toolchain with rust source (necessary for building eBPF).
+- bpf-linker: `cargo install bpf-linker` or `pacman -S bpf-linker` (Arch Linux).
 
-## Build eBPF
-
-```bash
-cargo xtask build-ebpf
-```
-
-To perform a release build you can use the `--release` flag.
-You may also change the target architecture with the `--target` flag.
-
-## Build Userspace
+## Build
 
 ```bash
-cargo build
+cargo xtask build --release
 ```
 
-## Build eBPF and Userspace
+Set env `ZSTD_SYS_USE_PKG_CONFIG=1` to dynamically link to system zstd library.
 
-```bash
-cargo xtask build
-```
+## Config
 
-## Run
+`etc/daemon.toml` provides a sample daemon config file.
 
-```bash
-RUST_LOG=info cargo xtask run
-```
+See the `ttyrecall-git` AUR package for a simple systemd service.
