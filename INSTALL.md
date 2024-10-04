@@ -1,5 +1,9 @@
 # Install
 
+## Packages
+
+- AUR: `ttyrecall-git`(Uses git main branch)
+
 ## Prerequisites
 
 - Rust toolchain (optional)
