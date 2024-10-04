@@ -1,9 +1,9 @@
-use std::{collections::HashSet, rc::Rc};
+use std::{borrow::Cow, collections::HashSet, rc::Rc};
 
 use aya::{include_bytes_aligned, maps::MapData, programs::FExit, Bpf, Btf};
 use aya_log::BpfLogger;
 use color_eyre::eyre::eyre;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use nix::unistd::User;
 use tokio::{io::unix::AsyncFd, select, signal};
 use ttyrecall_common::{EventKind, ShortEvent, WriteEvent, RECALL_CONFIG_INDEX_MODE};
@@ -129,14 +129,19 @@ impl Daemon {
                             WRITE_EVENT_SIZE => {
                                 let event: &WriteEvent = unsafe { &*(read.as_ptr().cast()) };
                                 if manager.exists(event.id) {
-                                    manager.write_to(event.id,
-                                        std::str::from_utf8(unsafe { &event.data.assume_init_ref()[..event.len] })?, event.time)?;
+                                    let slice = unsafe { &event.data.assume_init_ref()[..event.len] };
+                                    let str = match std::str::from_utf8(slice) {
+                                        Ok(s) => Cow::Borrowed(s),
+                                        Err(e) => {
+                                            error!("Not valid utf8: {e}: {slice:?}");
+                                            String::from_utf8_lossy(slice)
+                                        }
+                                    };
+                                    manager.write_to(event.id, &str, event.time)?;
                                 }
                             }
                             _ => unreachable!()
                         }
-
-
                     }
                     guard.clear_ready();
                 }
