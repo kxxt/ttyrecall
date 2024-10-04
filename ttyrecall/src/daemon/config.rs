@@ -1,11 +1,16 @@
 use std::{collections::HashSet, fmt::Display};
 
 use serde::Deserialize;
+use ttyrecall_common::{RECALL_CONFIG_MODE_ALLOWLIST, RECALL_CONFIG_MODE_BLOCKLIST};
 
 #[derive(Debug, Deserialize)]
 pub struct DaemonConfig {
-    /// A list of users that should be excluded.
-    pub exclude_users: HashSet<String>,
+    /// A list of users.
+    pub users: HashSet<String>,
+    /// A list of uids
+    pub uids: HashSet<u32>,
+    /// Mode that determines the meaning of users/uids
+    pub mode: Mode,
     /// The root dir for storing recordings.
     pub root: String,
     /// Compression
@@ -16,6 +21,15 @@ pub struct DaemonConfig {
 pub enum Compress {
     None,
     Zstd(Option<i32>),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Don't capture ptys from block listed user/uids
+    BlockList = RECALL_CONFIG_MODE_BLOCKLIST as isize,
+    /// Only capture ptys from allow listed user/uids
+    AllowList = RECALL_CONFIG_MODE_ALLOWLIST as isize,
 }
 
 impl Display for Compress {

@@ -43,3 +43,8 @@ pub struct WriteEvent {
 const PAGE_SIZE: usize = 4096;
 // This should be enough for most systems.
 pub const TTY_WRITE_MAX: usize = PAGE_SIZE / 2;
+
+pub const RECALL_CONFIG_INDEX_MODE: u32 = 0;
+
+pub const RECALL_CONFIG_MODE_BLOCKLIST: u64 = 0;
+pub const RECALL_CONFIG_MODE_ALLOWLIST: u64 = 1;

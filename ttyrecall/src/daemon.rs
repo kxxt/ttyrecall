@@ -1,10 +1,12 @@
-use std::rc::Rc;
+use std::{collections::HashSet, rc::Rc};
 
-use aya::{include_bytes_aligned, programs::FExit, Bpf, Btf};
+use aya::{include_bytes_aligned, maps::MapData, programs::FExit, Bpf, Btf};
 use aya_log::BpfLogger;
+use color_eyre::eyre::eyre;
 use log::{debug, info, warn};
+use nix::unistd::User;
 use tokio::{io::unix::AsyncFd, select, signal};
-use ttyrecall_common::{EventKind, ShortEvent, WriteEvent};
+use ttyrecall_common::{EventKind, ShortEvent, WriteEvent, RECALL_CONFIG_INDEX_MODE};
 
 use crate::{manager::Manager, session::PtySessionManager};
 
@@ -14,12 +16,27 @@ pub use config::*;
 
 pub struct Daemon {
     manager: Rc<Manager>,
+    mode: Mode,
+    uids: HashSet<u32>,
 }
 
 impl Daemon {
     pub fn new(config: DaemonConfig) -> color_eyre::Result<Self> {
         Ok(Self {
             manager: Rc::new(Manager::new(config.root, true, config.compress)?),
+            mode: config.mode,
+            uids: {
+                let mut uids = config.uids;
+                for user in config.users {
+                    uids.insert(
+                        User::from_name(&user)?
+                            .ok_or_else(|| eyre!("User {user} listed in `users` does not exist"))?
+                            .uid
+                            .as_raw(),
+                    );
+                }
+                uids
+            },
         })
     }
 
@@ -52,6 +69,14 @@ impl Daemon {
             warn!("failed to initialize eBPF logger: {}", e);
         }
         let btf = Btf::from_sys_fs()?;
+        let mut config =
+            aya::maps::Array::<&mut MapData, u64>::try_from(bpf.map_mut("CONFIG").unwrap())?;
+        config.set(RECALL_CONFIG_INDEX_MODE, self.mode as u64, 0)?;
+        let mut users =
+            aya::maps::HashMap::<&mut MapData, u32, u8>::try_from(bpf.map_mut("USERS").unwrap())?;
+        for uid in self.uids.iter() {
+            users.insert(uid, 0u8, 0)?;
+        }
         let install_prog: &mut FExit = bpf.program_mut("pty_unix98_install").unwrap().try_into()?;
         install_prog.load("pty_unix98_install", &btf)?;
         install_prog.attach()?;

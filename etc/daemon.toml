@@ -9,3 +9,12 @@ root = "/var/lib/ttyrecall"
 # - zstd        : zstd with default compression level
 # - zstd:$level : zstd with custom compression level
 compress = "zstd"
+
+# Mode
+# - blocklist: Record all pty sessions by default, but sessions from listed users/uids won't be recorded
+# - allowlist: Only record the pty sessions from listed users/uids
+mode = "blocklist"
+# User names
+users = []
+# UIDs
+uids = []

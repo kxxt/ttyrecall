@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
-    fs::File,
     io::{BufWriter, Write},
     rc::Rc,
     time::Duration,

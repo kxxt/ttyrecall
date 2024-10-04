@@ -16,6 +16,7 @@ mod vmlinux {
 use core::mem::MaybeUninit;
 
 use aya_ebpf::{
+    bindings::BPF_F_NO_PREALLOC,
     bpf_printk,
     cty::{c_int, ssize_t},
     helpers::{
@@ -23,12 +24,15 @@ use aya_ebpf::{
         bpf_probe_read_kernel_str_bytes,
     },
     macros::{fexit, map},
-    maps::{PerCpuArray, RingBuf},
+    maps::{Array, HashMap, PerCpuArray, RingBuf},
     programs::FExitContext,
     EbpfContext,
 };
 use aya_log_ebpf::{error, info, trace};
-use ttyrecall_common::{EventKind, ShortEvent, Size, WriteEvent, TTY_WRITE_MAX};
+use ttyrecall_common::{
+    EventKind, ShortEvent, Size, WriteEvent, RECALL_CONFIG_MODE_ALLOWLIST,
+    RECALL_CONFIG_MODE_BLOCKLIST, TTY_WRITE_MAX,
+};
 use vmlinux::{tty_driver, tty_struct, winsize};
 
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
@@ -39,6 +43,12 @@ static EVENT_RING: RingBuf = RingBuf::with_byte_size(128 * 1024 * 1024, 0); // 1
 
 #[map]
 static EVENT_CACHE: PerCpuArray<WriteEvent> = PerCpuArray::with_max_entries(1, 0);
+
+#[map]
+static CONFIG: Array<u64> = Array::with_max_entries(1, 0);
+
+#[map]
+static USERS: HashMap<u32, u8> = HashMap::with_max_entries(32768, BPF_F_NO_PREALLOC);
 
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
@@ -91,6 +101,9 @@ pub fn tty_do_resize(ctx: FExitContext) -> u32 {
 // C
 // static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
 fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
+    if !should_trace(&ctx) {
+        return Ok(1);
+    }
     trace!(&ctx, "function pty_write called");
     // Arguments
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
@@ -141,6 +154,9 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
 // C
 // static int pty_unix98_install(struct tty_driver *driver, struct tty_struct *tty)
 fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
+    if !should_trace(&ctx) {
+        return Ok(1);
+    }
     info!(&ctx, "function pty_unix98_install called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
@@ -164,9 +180,7 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
         uid,
         id,
         time,
-        kind: EventKind::PtyInstall {
-            comm,
-        },
+        kind: EventKind::PtyInstall { comm },
     });
     reserved.submit(0);
     info!(
@@ -180,6 +194,9 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
 // /* this is called once with whichever end is closed last */
 // static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
+    if !should_trace(&ctx) {
+        return Ok(1);
+    }
     info!(&ctx, "function pty_unix98_remove called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
@@ -214,7 +231,7 @@ fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let ws: *const winsize = unsafe { ctx.arg(1) };
     let ret: c_int = unsafe { ctx.arg(2) };
-    if ret < 0 {
+    if ret < 0 || !should_trace(&ctx) {
         return Ok(1);
     }
     // Creds
@@ -255,11 +272,9 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let ws: *const winsize = unsafe { ctx.arg(1) };
     let ret: c_int = unsafe { ctx.arg(2) };
-    if ret < 0 {
+    if ret < 0 || !should_trace(&ctx) {
         return Ok(1);
     }
-    // Creds
-    let uid = ctx.uid();
     // Read Info
     // id: /dev/pts/{id}
     let time = unsafe { bpf_ktime_get_tai_ns() };
@@ -276,7 +291,7 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
         return Err(u32::MAX);
     };
     reserved.write(ShortEvent {
-        uid,
+        uid: ctx.uid(),
         id,
         time,
         kind: EventKind::PtyResize {
@@ -292,6 +307,22 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
         "pty_resize slave{} to {}x{}", id, winsize.ws_col, winsize.ws_row
     );
     Ok(0)
+}
+
+fn should_trace(ctx: &FExitContext) -> bool {
+    let mode = CONFIG
+        .get(ttyrecall_common::RECALL_CONFIG_INDEX_MODE)
+        .map(|t| *t)
+        .unwrap_or_default();
+    let uid = ctx.uid();
+    match mode {
+        RECALL_CONFIG_MODE_BLOCKLIST => unsafe { USERS.get(&uid) }.is_none(),
+        RECALL_CONFIG_MODE_ALLOWLIST => unsafe { USERS.get(&uid) }.is_some(),
+        _ => {
+            error!(ctx, "Invalid mode: {}", mode);
+            return false;
+        }
+    }
 }
 
 #[panic_handler]
