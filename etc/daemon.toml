@@ -2,7 +2,6 @@
 # Configuration for ttyrecall daemon #
 ######################################
 
-exclude_users = []
 root = "/var/lib/ttyrecall"
 # Compression
 # - none        : no compression
