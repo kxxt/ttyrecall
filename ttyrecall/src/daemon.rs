@@ -110,8 +110,13 @@ impl Daemon {
         let mut async_fd = AsyncFd::new(event_ring)?;
         let mut manager = PtySessionManager::new(self.manager.clone());
         let mut interrupt_stream = signal(SignalKind::interrupt())?;
+        let mut termination_stream = signal(SignalKind::terminate())?;
         loop {
             select! {
+                _ = termination_stream.recv()  => {
+                    warn!("Termination signal received. Exiting");
+                    break;
+                }
                 _ = interrupt_stream.recv()  => {
                     break;
                 }
