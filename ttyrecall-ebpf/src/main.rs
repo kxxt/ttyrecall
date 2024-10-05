@@ -50,6 +50,14 @@ static CONFIG: Array<u64> = Array::with_max_entries(1, 0);
 #[map]
 static USERS: HashMap<u32, u8> = HashMap::with_max_entries(32768, BPF_F_NO_PREALLOC);
 
+/// The hash set of traced ptys
+/// NR_UNIX98_PTY_MAX is 1<<20 (1048576)
+/// pty slaves can have a major of 136-143
+/// So it appears that we can have (143-136+1)*2**20 = 8388608 pty slaves at most
+/// This needs further confirmation.
+#[map]
+static TRACED_PTYS: HashMap<u32, u8> = HashMap::with_max_entries(8388608, BPF_F_NO_PREALLOC);
+
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
     match try_pty_write(ctx) {
@@ -90,20 +98,9 @@ pub fn tty_do_resize(ctx: FExitContext) -> u32 {
     }
 }
 
-// TODO:
-// hook
-// - devpts_pty_new: node creation in /dev/pts
-// - devpts_pty_kill: node deletion in /dev/pts
-
-// TODO:
-// 1. send pty output to userspace
-// 2.
 // C
 // static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
 fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
-    if !should_trace(&ctx) {
-        return Ok(1);
-    }
     trace!(&ctx, "function pty_write called");
     // Arguments
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
@@ -118,6 +115,9 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
     let uid = ctx.uid();
     // id: /dev/pts/{id}
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    if !should_trace(id) {
+        return Ok(3);
+    }
     let driver = unsafe { bpf_probe_read_kernel(&(*tty).driver).unwrap() };
     // https://elixir.bootlin.com/linux/v6.11/source/include/linux/tty_driver.h#L568-L571
     let subtype = unsafe { bpf_probe_read_kernel(&(*driver).subtype).unwrap() };
@@ -154,9 +154,19 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
 // C
 // static int pty_unix98_install(struct tty_driver *driver, struct tty_struct *tty)
 fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
-    if !should_trace(&ctx) {
-        return Ok(1);
-    }
+    let mode = CONFIG
+        .get(ttyrecall_common::RECALL_CONFIG_INDEX_MODE)
+        .map(|t| *t)
+        .unwrap_or_default();
+    let uid = ctx.uid();
+    let should_trace = match mode {
+        RECALL_CONFIG_MODE_BLOCKLIST => unsafe { USERS.get(&uid) }.is_none(),
+        RECALL_CONFIG_MODE_ALLOWLIST => unsafe { USERS.get(&uid) }.is_some(),
+        _ => {
+            error!(&ctx, "Invalid mode: {}", mode);
+            false
+        }
+    };
     info!(&ctx, "function pty_unix98_install called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
@@ -165,11 +175,14 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     if ret < 0 {
         return Ok(1);
     }
-    // Creds
-    let uid = ctx.uid();
     // Read Info
     // id: /dev/pts/{id}
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    if should_trace {
+        TRACED_PTYS.insert(&id, &0, 0).unwrap();
+    } else {
+        return Ok(2);
+    }
     let time = unsafe { bpf_ktime_get_tai_ns() };
     let comm = bpf_get_current_comm().unwrap();
     let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
@@ -194,9 +207,6 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
 // /* this is called once with whichever end is closed last */
 // static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
-    if !should_trace(&ctx) {
-        return Ok(1);
-    }
     info!(&ctx, "function pty_unix98_remove called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
@@ -206,6 +216,10 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     // Read Info
     // id: /dev/pts/{id}
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    if !should_trace(id) {
+        return Ok(3);
+    }
+    TRACED_PTYS.remove(&id).unwrap();
     let time = unsafe { bpf_ktime_get_tai_ns() };
     let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
@@ -231,7 +245,7 @@ fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let ws: *const winsize = unsafe { ctx.arg(1) };
     let ret: c_int = unsafe { ctx.arg(2) };
-    if ret < 0 || !should_trace(&ctx) {
+    if ret < 0 {
         return Ok(1);
     }
     // Creds
@@ -240,6 +254,9 @@ fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
     // id: /dev/pts/{id}
     let time = unsafe { bpf_ktime_get_tai_ns() };
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    if !should_trace(id) {
+        return Ok(3);
+    }
     let winsize = unsafe { bpf_probe_read_kernel(ws).unwrap() };
     let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
@@ -272,7 +289,7 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let ws: *const winsize = unsafe { ctx.arg(1) };
     let ret: c_int = unsafe { ctx.arg(2) };
-    if ret < 0 || !should_trace(&ctx) {
+    if ret < 0 {
         return Ok(1);
     }
     // Read Info
@@ -285,6 +302,9 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
         return Ok(2);
     }
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
+    if !should_trace(id) {
+        return Ok(3);
+    }
     let winsize = unsafe { bpf_probe_read_kernel(ws).unwrap() };
     let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
@@ -309,20 +329,8 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
     Ok(0)
 }
 
-fn should_trace(ctx: &FExitContext) -> bool {
-    let mode = CONFIG
-        .get(ttyrecall_common::RECALL_CONFIG_INDEX_MODE)
-        .map(|t| *t)
-        .unwrap_or_default();
-    let uid = ctx.uid();
-    match mode {
-        RECALL_CONFIG_MODE_BLOCKLIST => unsafe { USERS.get(&uid) }.is_none(),
-        RECALL_CONFIG_MODE_ALLOWLIST => unsafe { USERS.get(&uid) }.is_some(),
-        _ => {
-            error!(ctx, "Invalid mode: {}", mode);
-            return false;
-        }
-    }
+fn should_trace(id: u32) -> bool {
+    unsafe { TRACED_PTYS.get(&id) }.is_some()
 }
 
 #[panic_handler]
