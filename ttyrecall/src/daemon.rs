@@ -18,6 +18,7 @@ pub struct Daemon {
     manager: Rc<Manager>,
     mode: Mode,
     uids: HashSet<u32>,
+    excluded_comms: HashSet<Comm>,
 }
 
 impl Daemon {
@@ -37,6 +38,7 @@ impl Daemon {
                 }
                 uids
             },
+            excluded_comms: config.excluded_comms,
         })
     }
 
@@ -76,6 +78,12 @@ impl Daemon {
             aya::maps::HashMap::<&mut MapData, u32, u8>::try_from(bpf.map_mut("USERS").unwrap())?;
         for uid in self.uids.iter() {
             users.insert(uid, 0u8, 0)?;
+        }
+        let mut excluded_comms = aya::maps::HashMap::<&mut MapData, [u8; 16], u8>::try_from(
+            bpf.map_mut("EXCLUDED_COMMS").unwrap(),
+        )?;
+        for comm in self.excluded_comms.iter() {
+            excluded_comms.insert(&comm.0, 0u8, 0)?;
         }
         let install_prog: &mut FExit = bpf.program_mut("pty_unix98_install").unwrap().try_into()?;
         install_prog.load("pty_unix98_install", &btf)?;

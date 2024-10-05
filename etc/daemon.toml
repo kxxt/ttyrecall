@@ -20,3 +20,8 @@ users = []
 uids = [
     0, # The root user's session is not interesting most of the time
 ]
+# Ignore pty sessions opened by process with following comms
+excluded_comms = [
+    "sudo", # While sudo opens a new pty but we also have the contents available in parent pty.
+    "asciinema", # Usually it's not helpful to record it again when it is already being recorded by asciinema.
+]

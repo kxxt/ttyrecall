@@ -13,7 +13,7 @@ mod vmlinux {
     include!("generated_vmlinux.rs");
 }
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, usize};
 
 use aya_ebpf::{
     bindings::BPF_F_NO_PREALLOC,
@@ -57,6 +57,12 @@ static USERS: HashMap<u32, u8> = HashMap::with_max_entries(32768, BPF_F_NO_PREAL
 /// This needs further confirmation.
 #[map]
 static TRACED_PTYS: HashMap<u32, u8> = HashMap::with_max_entries(8388608, BPF_F_NO_PREALLOC);
+
+/// The map of excluded comms. We won't record sessions started from such processes.
+///
+/// The comm must be NUL terminated and all bytes after it must also be NUL.
+#[map]
+static EXCLUDED_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, BPF_F_NO_PREALLOC);
 
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
@@ -111,8 +117,6 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
         return Err(u32::MAX);
     }
     // Creds
-    let pid = ctx.pid();
-    let uid = ctx.uid();
     // id: /dev/pts/{id}
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
     if !should_trace(id) {
@@ -178,13 +182,13 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     // Read Info
     // id: /dev/pts/{id}
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
-    if should_trace {
+    let time = unsafe { bpf_ktime_get_tai_ns() };
+    let comm = canonicalized_comm();
+    if should_trace && unsafe { EXCLUDED_COMMS.get(&comm) }.is_none() {
         TRACED_PTYS.insert(&id, &0, 0).unwrap();
     } else {
         return Ok(2);
     }
-    let time = unsafe { bpf_ktime_get_tai_ns() };
-    let comm = bpf_get_current_comm().unwrap();
     let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
@@ -327,6 +331,21 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
         "pty_resize slave{} to {}x{}", id, winsize.ws_col, winsize.ws_row
     );
     Ok(0)
+}
+
+fn canonicalized_comm() -> [u8; 16] {
+    let mut comm = bpf_get_current_comm().unwrap();
+    // index of first nul
+    let mut idx_nul = usize::MAX;
+    // Ensure the comm ends with NUL bytes
+    for i in 0..comm.len() {
+        if i > idx_nul {
+            comm[i] = 0;
+        } else if comm[i] == 0 {
+            idx_nul = i;
+        }
+    }
+    comm
 }
 
 fn should_trace(id: u32) -> bool {

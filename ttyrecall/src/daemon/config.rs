@@ -15,6 +15,8 @@ pub struct DaemonConfig {
     pub root: String,
     /// Compression
     pub compress: Compress,
+    /// Excluded comms
+    pub excluded_comms: HashSet<Comm>,
 }
 
 #[derive(Debug)]
@@ -75,5 +77,27 @@ impl<'de> Deserialize<'de> for Compress {
                 }
             }
         })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct Comm(pub [u8; 16]);
+
+impl<'de> Deserialize<'de> for Comm {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let bytes = s.as_bytes();
+        if s.len() > 15 {
+            return Err(serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&s),
+                &"A valid comm string (byte length is less than 16)",
+            ));
+        }
+        let mut comm = [0; 16];
+        comm[..bytes.len()].copy_from_slice(bytes);
+        Ok(Self(comm))
     }
 }
