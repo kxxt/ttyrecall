@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Debug, Clone, Parser)]
 pub struct CommandLine {
@@ -46,4 +47,6 @@ pub enum Command {
         )]
         config: Option<PathBuf>,
     },
+    #[clap(about = "Generate shell completion file")]
+    GenerateCompletion { shell: Shell },
 }
