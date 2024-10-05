@@ -18,11 +18,7 @@ use crate::{daemon::Compress, manager::Manager};
 /// A running pty session
 struct PtySession {
     writer: Box<dyn Write>,
-    pty_id: u32,
-    uid: Uid,
-    counter: u64,
     start_ns: u64,
-    comm: String,
     /// Wait for the first resize event to correctly populate the width/height metadata.
     staged_events: Option<Vec<StagedEvent>>,
 }
@@ -45,11 +41,7 @@ impl PtySession {
         };
         Ok(Self {
             writer,
-            pty_id,
-            uid: Uid::from_raw(uid),
-            counter: 0,
             start_ns,
-            comm,
             staged_events: Some(Vec::new()),
         })
     }
