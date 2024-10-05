@@ -8,6 +8,7 @@ use std::{
 
 use chrono::Utc;
 use color_eyre::eyre::bail;
+use log::info;
 use nix::unistd::Uid;
 use serde::Serialize;
 use ttyrecall_common::Size;
@@ -138,6 +139,7 @@ impl PtySessionManager {
         comm: String,
         start_ns: u64,
     ) -> color_eyre::Result<()> {
+        info!("add_session({pty_id}, {uid}, {comm}, {start_ns})");
         if self.sessions.contains_key(&pty_id) {
             bail!("A pty session numbered {pty_id} already exists!");
         }
@@ -199,6 +201,7 @@ impl PtySessionManager {
     }
 
     pub fn remove_session(&mut self, id: u32) {
+        info!("remove_session({id})");
         self.sessions.remove(&id);
     }
 }
