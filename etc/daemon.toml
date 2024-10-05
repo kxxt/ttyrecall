@@ -17,4 +17,6 @@ mode = "blocklist"
 # User names
 users = []
 # UIDs
-uids = []
+uids = [
+    0, # The root user's session is not interesting most of the time
+]
