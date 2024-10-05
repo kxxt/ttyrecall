@@ -5,7 +5,11 @@ use aya_log::BpfLogger;
 use color_eyre::eyre::eyre;
 use log::{debug, error, info, warn};
 use nix::unistd::User;
-use tokio::{io::unix::AsyncFd, select, signal};
+use tokio::{
+    io::unix::AsyncFd,
+    select,
+    signal::{unix::signal, unix::SignalKind},
+};
 use ttyrecall_common::{EventKind, ShortEvent, WriteEvent, RECALL_CONFIG_INDEX_MODE};
 
 use crate::{manager::Manager, session::PtySessionManager};
@@ -105,10 +109,10 @@ impl Daemon {
         let event_ring = aya::maps::RingBuf::try_from(bpf.map_mut("EVENT_RING").unwrap())?;
         let mut async_fd = AsyncFd::new(event_ring)?;
         let mut manager = PtySessionManager::new(self.manager.clone());
+        let mut interrupt_stream = signal(SignalKind::interrupt())?;
         loop {
             select! {
-                // TODO: This is probably not the best way to handle Ctrl+C...
-                _ = signal::ctrl_c() => {
+                _ = interrupt_stream.recv()  => {
                     break;
                 }
                 guard = async_fd.readable_mut() => {
