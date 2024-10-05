@@ -8,7 +8,7 @@ mod daemon;
 mod manager;
 mod session;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     env_logger::init();
