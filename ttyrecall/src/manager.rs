@@ -70,12 +70,13 @@ impl Manager {
 
         let path_for_recording = |counter: usize| {
             self.root.join(format!(
-                "{uid}/{year}/{month:02}/{day:02}/{comm}-pty{pty_id}-{hour:02}:{minte:02}{dash}{cnt}.cast{compress}",
+                "{uid}/{year}/{month:02}/{day:02}/{comm}-pty{pty_id}-{hour:02}:{minte:02}:{second:02}{dash}{cnt}.cast{compress}",
                 year = now.year(),
                 month = now.month(),
                 day = now.day(),
                 hour = now.hour(),
                 minte = now.minute(),
+                second = now.second(),
                 dash = if counter > 0 { "-" } else { "" },
                 cnt = if counter > 0 { Cow::Owned(counter.to_string()) } else { Cow::Borrowed("") },
                 compress = if let Compress::Zstd(_) = self.compress { ".zst" } else { "" }

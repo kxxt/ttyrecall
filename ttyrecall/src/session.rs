@@ -204,5 +204,11 @@ enum StagedEvent {
     Write { content: String, time_ns: u64 },
 }
 
+/// An accountable [`Write`]r that records the amount of writes occurred.
+struct AccountableWriter {
+    inner: Box<dyn Write>,
+    total_writes: usize,
+}
+
 #[cfg(test)]
 mod test {}
