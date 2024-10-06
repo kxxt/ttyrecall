@@ -35,11 +35,23 @@ use ttyrecall_common::{
 };
 use vmlinux::{tty_driver, tty_struct, winsize};
 
+// #[cfg(feature = "resource-saving")]
+// ;
+
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
 // will cause 2048 * 128 bytes to be accumlated on our buffer.
 // Let's reserve 512 times it for now. It should be enough.
+// In resource saving mode, we assume 16 cores. 16 * 2048 bytes written in parallel at max.
 #[map]
-static EVENT_RING: RingBuf = RingBuf::with_byte_size(128 * 1024 * 1024, 0); // 128 MiB
+static EVENT_RING: RingBuf = RingBuf::with_byte_size(
+    if cfg!(feature = "resource-saving") {
+        16
+    } else {
+        128
+    } * 2048
+        * 512,
+    0,
+); // 128 MiB
 
 #[map]
 static EVENT_CACHE: PerCpuArray<WriteEvent> = PerCpuArray::with_max_entries(1, 0);
@@ -48,7 +60,15 @@ static EVENT_CACHE: PerCpuArray<WriteEvent> = PerCpuArray::with_max_entries(1, 0
 static CONFIG: Array<u64> = Array::with_max_entries(1, 0);
 
 #[map]
-static USERS: HashMap<u32, u8> = HashMap::with_max_entries(32768, BPF_F_NO_PREALLOC);
+static USERS: HashMap<u32, u8> = HashMap::with_max_entries(
+    if cfg!(feature = "resource-saving") {
+        // Only allow 1024 users in the list
+        1024
+    } else {
+        32768
+    },
+    BPF_F_NO_PREALLOC,
+);
 
 /// The hash set of traced ptys
 /// NR_UNIX98_PTY_MAX is 1<<20 (1048576)
@@ -56,7 +76,15 @@ static USERS: HashMap<u32, u8> = HashMap::with_max_entries(32768, BPF_F_NO_PREAL
 /// So it appears that we can have (143-136+1)*2**20 = 8388608 pty slaves at most
 /// This needs further confirmation.
 #[map]
-static TRACED_PTYS: HashMap<u32, u8> = HashMap::with_max_entries(8388608, BPF_F_NO_PREALLOC);
+static TRACED_PTYS: HashMap<u32, u8> = HashMap::with_max_entries(
+    if cfg!(feature = "resource-saving") {
+        // Only allow 4096 ptys to be traced in parallel
+        4096
+    } else {
+        8388608
+    },
+    BPF_F_NO_PREALLOC,
+);
 
 /// The map of excluded comms. We won't record sessions started from such processes.
 ///

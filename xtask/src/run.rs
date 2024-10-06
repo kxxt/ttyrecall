@@ -19,6 +19,8 @@ pub struct Options {
     /// The command used to wrap your application
     #[clap(short, long, default_value = "sudo -E")]
     pub runner: String,
+    #[clap(long)]
+    pub disable_resource_saving: bool,
     /// Arguments to pass to your application
     #[clap(name = "args", last = true)]
     pub run_args: Vec<String>,
@@ -30,6 +32,7 @@ pub fn run(opts: Options) -> Result<(), anyhow::Error> {
     build(BuildOptions {
         bpf_target: opts.bpf_target,
         release: opts.release,
+        disable_resource_saving: opts.disable_resource_saving,
     })
     .context("Error while building project")?;
 

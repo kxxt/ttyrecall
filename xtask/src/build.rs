@@ -13,6 +13,8 @@ pub struct Options {
     /// Build and run the release target
     #[clap(long)]
     pub release: bool,
+    #[clap(long)]
+    pub disable_resource_saving: bool,
 }
 
 /// Build the project
@@ -35,6 +37,7 @@ pub fn build(opts: Options) -> Result<(), anyhow::Error> {
     build_ebpf(BuildOptions {
         target: opts.bpf_target,
         release: opts.release,
+        disable_resource_saving: opts.disable_resource_saving,
     })
     .context("Error while building eBPF program")?;
     build_project(&opts).context("Error while building userspace application")?;

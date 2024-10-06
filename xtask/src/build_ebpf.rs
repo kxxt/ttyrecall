@@ -37,6 +37,8 @@ pub struct Options {
     /// Build the release target
     #[clap(long)]
     pub release: bool,
+    #[clap(long)]
+    pub disable_resource_saving: bool,
 }
 
 pub fn build_ebpf(opts: Options) -> Result<(), anyhow::Error> {
@@ -45,6 +47,9 @@ pub fn build_ebpf(opts: Options) -> Result<(), anyhow::Error> {
     let mut args = vec!["build", target.as_str(), "-Z", "build-std=core"];
     if opts.release {
         args.push("--release")
+    }
+    if opts.disable_resource_saving {
+        args.push("--no-default-features");
     }
 
     // Command::new creates a child process which inherits all env variables. This means env

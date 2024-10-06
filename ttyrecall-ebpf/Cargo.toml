@@ -13,6 +13,10 @@ ttyrecall-common = { path = "../ttyrecall-common" }
 name = "ttyrecall"
 path = "src/main.rs"
 
+[features]
+default = ["resource-saving"]
+resource-saving = []
+
 [profile.dev]
 opt-level = 3
 debug = false
