@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet, rc::Rc};
+use std::{borrow::Cow, collections::HashSet, num::NonZeroUsize, rc::Rc};
 
 use aya::{include_bytes_aligned, maps::MapData, programs::FExit, Bpf, Btf};
 use aya_log::BpfLogger;
@@ -23,6 +23,7 @@ pub struct Daemon {
     mode: Mode,
     uids: HashSet<u32>,
     excluded_comms: HashSet<Comm>,
+    budget: Option<NonZeroUsize>,
 }
 
 impl Daemon {
@@ -43,6 +44,7 @@ impl Daemon {
                 uids
             },
             excluded_comms: config.excluded_comms,
+            budget: NonZeroUsize::new(config.soft_budget),
         })
     }
 
@@ -87,7 +89,7 @@ impl Daemon {
             bpf.map_mut("EXCLUDED_COMMS").unwrap(),
         )?;
         for comm in self.excluded_comms.iter() {
-            excluded_comms.insert(&comm.0, 0u8, 0)?;
+            excluded_comms.insert(comm.0, 0u8, 0)?;
         }
         let install_prog: &mut FExit = bpf.program_mut("pty_unix98_install").unwrap().try_into()?;
         install_prog.load("pty_unix98_install", &btf)?;
@@ -108,7 +110,7 @@ impl Daemon {
         info!("Waiting for Ctrl-C...");
         let event_ring = aya::maps::RingBuf::try_from(bpf.map_mut("EVENT_RING").unwrap())?;
         let mut async_fd = AsyncFd::new(event_ring)?;
-        let mut manager = PtySessionManager::new(self.manager.clone());
+        let mut manager = PtySessionManager::new(self.manager.clone(), self.budget);
         let mut interrupt_stream = signal(SignalKind::interrupt())?;
         let mut termination_stream = signal(SignalKind::terminate())?;
         loop {

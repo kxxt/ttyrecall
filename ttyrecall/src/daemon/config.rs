@@ -17,6 +17,8 @@ pub struct DaemonConfig {
     pub compress: Compress,
     /// Excluded comms
     pub excluded_comms: HashSet<Comm>,
+    /// Soft budget
+    pub soft_budget: usize,
 }
 
 #[derive(Debug)]

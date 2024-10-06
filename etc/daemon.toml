@@ -24,3 +24,8 @@ excluded_comms = [
     "sudo", # While sudo opens a new pty but we also have the contents available in parent pty.
     "asciinema", # Usually it's not helpful to record it again when it is already being recorded by asciinema.
 ]
+
+# Soft budget for every recording file. The recording will stop after it overruns the budget.
+# Unit: bytes
+# A special value of zero will disable the soft budget.
+soft_budget = 52428800
