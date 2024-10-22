@@ -29,12 +29,29 @@ pub struct ShortEvent {
     pub kind: EventKind,
 }
 
-#[derive(Debug)]
-pub struct WriteEvent {
+#[derive(Debug, Default)]
+#[repr(C)]
+// This struct should be bigger than `ShortEvent`
+// because we are leaveraging this to determine if a event
+// is a `ShortEvent`
+pub struct WriteEventHead {
     pub id: u32,
     pub time: u64,
-    pub len: usize,
-    pub data: MaybeUninit<[u8; TTY_WRITE_MAX]>,
+    pub comm: [u8; 16],
+    pub _padding: [u8; 16],
+}
+
+const _: () = assert!(
+    size_of::<ShortEvent>() < size_of::<WriteEventHead>(),
+    "ShortEvent should be shorter than WriteEventHead!"
+);
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct WriteEvent {
+    pub head: WriteEventHead,
+    // There is no padding between the two members! Do NOT BREAK it!
+    pub data: [u8],
 }
 
 // TTY_BUFFER_PAGE: https://elixir.bootlin.com/linux/v6.11/source/drivers/tty/tty_buffer.c#L41

@@ -10,7 +10,9 @@ use tokio::{
     select,
     signal::{unix::signal, unix::SignalKind},
 };
-use ttyrecall_common::{EventKind, ShortEvent, WriteEvent, RECALL_CONFIG_INDEX_MODE};
+use ttyrecall_common::{
+    EventKind, ShortEvent, WriteEvent, WriteEventHead, RECALL_CONFIG_INDEX_MODE,
+};
 
 use crate::{manager::Manager, session::PtySessionManager};
 
@@ -127,7 +129,6 @@ impl Daemon {
                     let rb = guard.get_inner_mut();
                     while let Some(read) = rb.next() {
                         const SHORT_EVENT_SIZE: usize = std::mem::size_of::<ShortEvent>();
-                        const WRITE_EVENT_SIZE: usize = std::mem::size_of::<WriteEvent>();
                         match read.len() {
                             SHORT_EVENT_SIZE => {
                                 let event: &ShortEvent = unsafe { &*(read.as_ptr().cast()) };
@@ -145,10 +146,17 @@ impl Daemon {
                                     }
                                 }
                             }
-                            WRITE_EVENT_SIZE => {
-                                let event: &WriteEvent = unsafe { &*(read.as_ptr().cast()) };
-                                if manager.exists(event.id) {
-                                    let slice = unsafe { &event.data.assume_init_ref()[..event.len] };
+                            size if size > SHORT_EVENT_SIZE => {
+                                assert!(size > size_of::<WriteEventHead>());
+                                let event: &WriteEvent = unsafe {
+                                    // SAFETY:
+                                    // *const [T] encodes the number of elements and when we cast it to another fat pointer,
+                                    // the encoded length is preserved.
+                                    // https://github.com/rust-lang/reference/pull/1417
+                                    &*(&read[..(size - size_of::<WriteEventHead>())] as *const [u8] as *const WriteEvent)
+                                };
+                                if manager.exists(event.head.id) {
+                                    let slice = &event.data;
                                     let str = match std::str::from_utf8(slice) {
                                         Ok(s) => Cow::Borrowed(s),
                                         Err(e) => {
@@ -156,7 +164,7 @@ impl Daemon {
                                             String::from_utf8_lossy(slice)
                                         }
                                     };
-                                    manager.write_to(event.id, &str, event.time)?;
+                                    manager.write_to(event.head.id, &str, event.head.time)?;
                                 }
                             }
                             _ => unreachable!()

@@ -13,48 +13,42 @@ mod vmlinux {
     include!("generated_vmlinux.rs");
 }
 
-use core::{mem::MaybeUninit, usize};
+use core::{mem::MaybeUninit, ptr::addr_of, usize};
 
 use aya_ebpf::{
-    bindings::BPF_F_NO_PREALLOC,
+    bindings::{bpf_dynptr, BPF_F_NO_PREALLOC},
     bpf_printk,
-    cty::{c_int, ssize_t},
+    cty::{c_int, c_void, ssize_t},
     helpers::{
-        bpf_get_current_comm, bpf_ktime_get_tai_ns, bpf_probe_read_kernel,
-        bpf_probe_read_kernel_str_bytes,
+        bpf_dynptr_data, bpf_dynptr_write, bpf_get_current_comm, bpf_ktime_get_tai_ns,
+        bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes, bpf_ringbuf_discard_dynptr,
+        bpf_ringbuf_reserve_dynptr, bpf_ringbuf_submit_dynptr,
     },
     macros::{fexit, map},
     maps::{Array, HashMap, PerCpuArray, RingBuf},
     programs::FExitContext,
     EbpfContext,
 };
-use aya_log_ebpf::{error, info, trace};
+use aya_log_ebpf::{error, info, trace, warn};
 use ttyrecall_common::{
-    EventKind, ShortEvent, Size, WriteEvent, RECALL_CONFIG_MODE_ALLOWLIST,
+    EventKind, ShortEvent, Size, WriteEvent, WriteEventHead, RECALL_CONFIG_MODE_ALLOWLIST,
     RECALL_CONFIG_MODE_BLOCKLIST, TTY_WRITE_MAX,
 };
 use vmlinux::{tty_driver, tty_struct, winsize};
 
-// #[cfg(feature = "resource-saving")]
-// ;
-
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
 // will cause 2048 * 128 bytes to be accumlated on our buffer.
 // Let's reserve 512 times it for now. It should be enough.
-// In resource saving mode, we assume 16 cores. 16 * 2048 bytes written in parallel at max.
 #[map]
 static EVENT_RING: RingBuf = RingBuf::with_byte_size(
     if cfg!(feature = "resource-saving") {
-        16
+        128
     } else {
         128
     } * 2048
         * 512,
     0,
 ); // 128 MiB
-
-#[map]
-static EVENT_CACHE: PerCpuArray<WriteEvent> = PerCpuArray::with_max_entries(1, 0);
 
 #[map]
 static CONFIG: Array<u64> = Array::with_max_entries(1, 0);
@@ -158,27 +152,49 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
         return Ok(0);
     }
     let time = unsafe { bpf_ktime_get_tai_ns() };
-    let Some(event) = EVENT_CACHE.get_ptr_mut(0) else {
-        return Err(u32::MAX);
-    };
+    let slice_size = (ret as usize).min(TTY_WRITE_MAX);
+    let mut dynptr = MaybeUninit::<bpf_dynptr>::uninit();
     unsafe {
-        event.write(WriteEvent {
-            id,
-            time,
-            len: 0,
-            data: MaybeUninit::uninit(),
-        })
+        let result = bpf_ringbuf_reserve_dynptr(
+            addr_of!(EVENT_RING) as *mut c_void,
+            size_of::<WriteEventHead>() as u32 + slice_size as u32,
+            0,
+            dynptr.as_mut_ptr(),
+        );
+        if result < 0 {
+            warn!(&ctx, "No space on ringbuf");
+            bpf_ringbuf_discard_dynptr(dynptr.as_mut_ptr(), 0);
+            return Err(u32::MAX);
+        }
     };
-    // FIXME: this assume_init_mut call is probably UB
-    let dest_slice =
-        &mut unsafe { (*event).data.assume_init_mut() }[..(ret as usize + 2).min(TTY_WRITE_MAX)];
-    let len = match unsafe { bpf_probe_read_kernel_str_bytes(buf, dest_slice) } {
-        Ok(slice) => slice.len().min(ret as usize),
-        Err(_) => return Err(u32::MAX),
-    };
-    unsafe { (*event).len = len }
-    if let Err(_) = EVENT_RING.output(unsafe { &*event }, 0) {
-        error!(&ctx, "Failed to output event!");
+    let head = WriteEventHead { id, time, ..Default::default() };
+    unsafe {
+        bpf_dynptr_write(
+            dynptr.as_mut_ptr(),
+            0,
+            addr_of!(head) as *mut c_void, // Actually we don't need mut.
+            size_of_val(&head) as u32,
+            0,
+        );
+        // Guaranteed success
+    }
+    // Write payload
+    unsafe {
+        let result = bpf_dynptr_write(
+            dynptr.as_mut_ptr(),
+            size_of_val(&head) as u32,
+            buf as *mut c_void,
+            slice_size as u32,
+            0,
+        );
+        if result < 0 {
+            warn!(&ctx, "Failed to write data to ringbuf backed dynptr!");
+            bpf_ringbuf_discard_dynptr(dynptr.as_mut_ptr(), 0);
+            return Err(u32::MAX);
+        }
+    }
+    unsafe {
+        bpf_ringbuf_submit_dynptr(dynptr.as_mut_ptr(), 0);
     }
     Ok(0)
 }
