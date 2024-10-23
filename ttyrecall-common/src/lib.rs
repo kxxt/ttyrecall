@@ -1,7 +1,5 @@
 #![no_std]
 
-use core::mem::MaybeUninit;
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Size {
     pub width: u16,

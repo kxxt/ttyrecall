@@ -17,12 +17,11 @@ use core::{mem::MaybeUninit, ptr::addr_of, usize};
 
 use aya_ebpf::{
     bindings::{bpf_dynptr, BPF_F_NO_PREALLOC},
-    bpf_printk,
     cty::{c_int, c_void, ssize_t},
     helpers::{
         bpf_dynptr_data, bpf_dynptr_write, bpf_get_current_comm, bpf_ktime_get_tai_ns,
-        bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes, bpf_ringbuf_discard_dynptr,
-        bpf_ringbuf_reserve_dynptr, bpf_ringbuf_submit_dynptr,
+        bpf_probe_read_kernel, bpf_ringbuf_discard_dynptr, bpf_ringbuf_reserve_dynptr,
+        bpf_ringbuf_submit_dynptr, gen::bpf_probe_read_kernel as raw_bpf_probe_read_kernel,
     },
     macros::{fexit, map},
     maps::{Array, HashMap, PerCpuArray, RingBuf},
@@ -31,7 +30,7 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, trace, warn};
 use ttyrecall_common::{
-    EventKind, ShortEvent, Size, WriteEvent, WriteEventHead, RECALL_CONFIG_MODE_ALLOWLIST,
+    EventKind, ShortEvent, Size, WriteEventHead, RECALL_CONFIG_MODE_ALLOWLIST,
     RECALL_CONFIG_MODE_BLOCKLIST, TTY_WRITE_MAX,
 };
 use vmlinux::{tty_driver, tty_struct, winsize};
@@ -85,6 +84,13 @@ static TRACED_PTYS: HashMap<u32, u8> = HashMap::with_max_entries(
 /// The comm must be NUL terminated and all bytes after it must also be NUL.
 #[map]
 static EXCLUDED_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(1024, BPF_F_NO_PREALLOC);
+
+const INTERMEDIATE_BUFFER_SIZE: usize = 128;
+const TRANSFER_LOOP_CNT_MAX: usize = TTY_WRITE_MAX / INTERMEDIATE_BUFFER_SIZE;
+
+#[map]
+static INTERMEDIATE_BUFFER: PerCpuArray<[u8; INTERMEDIATE_BUFFER_SIZE]> =
+    PerCpuArray::with_max_entries(1, 0);
 
 #[fexit(function = "pty_write")]
 pub fn pty_write(ctx: FExitContext) -> u32 {
@@ -167,7 +173,11 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
             return Err(u32::MAX);
         }
     };
-    let head = WriteEventHead { id, time, ..Default::default() };
+    let head = WriteEventHead {
+        id,
+        time,
+        ..Default::default()
+    };
     unsafe {
         bpf_dynptr_write(
             dynptr.as_mut_ptr(),
@@ -178,19 +188,49 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
         );
         // Guaranteed success
     }
-    // Write payload
+    // Write payload chunk by chunk
     unsafe {
-        let result = bpf_dynptr_write(
-            dynptr.as_mut_ptr(),
-            size_of_val(&head) as u32,
-            buf as *mut c_void,
-            slice_size as u32,
-            0,
-        );
-        if result < 0 {
-            warn!(&ctx, "Failed to write data to ringbuf backed dynptr!");
-            bpf_ringbuf_discard_dynptr(dynptr.as_mut_ptr(), 0);
-            return Err(u32::MAX);
+        let cnt = ((slice_size + INTERMEDIATE_BUFFER_SIZE - 1) / INTERMEDIATE_BUFFER_SIZE)
+            .min(TRANSFER_LOOP_CNT_MAX);
+        let base_offset = size_of_val(&head);
+        let mut offset = 0;
+        for _ in 0..cnt {
+            let chunk_size = INTERMEDIATE_BUFFER_SIZE.min(slice_size - offset);
+            if chunk_size == INTERMEDIATE_BUFFER_SIZE {
+                let chunk = bpf_dynptr_data(
+                    dynptr.as_mut_ptr(),
+                    (base_offset + offset) as u32,
+                    INTERMEDIATE_BUFFER_SIZE as u32,
+                );
+                if chunk.is_null() {
+                    warn!(&ctx, "BUG! bpf_dynptr_data failure");
+                    bpf_ringbuf_discard_dynptr(dynptr.as_mut_ptr(), 0);
+                    return Err(u32::MAX);
+                }
+                raw_bpf_probe_read_kernel(chunk, chunk_size as u32, buf.byte_add(offset).cast());
+                // MAYBE check result?
+            } else {
+                let Some(intermediate) = INTERMEDIATE_BUFFER.get_ptr(0) else {
+                    // Should not happen
+                    bpf_ringbuf_discard_dynptr(dynptr.as_mut_ptr(), 0);
+                    return Err(u32::MAX);
+                };
+                let intermediate = intermediate as *mut c_void;
+                raw_bpf_probe_read_kernel(
+                    intermediate,
+                    chunk_size as u32,
+                    buf.byte_add(offset).cast(),
+                );
+                // MAYBE check result?
+                bpf_dynptr_write(
+                    dynptr.as_mut_ptr(),
+                    (base_offset + offset) as u32,
+                    intermediate,
+                    chunk_size as u32,
+                    0,
+                );
+            }
+            offset += chunk_size;
         }
     }
     unsafe {
