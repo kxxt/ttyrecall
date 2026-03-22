@@ -493,18 +493,7 @@ async fn download_recording(
         None => return (StatusCode::NOT_FOUND, "Not found").into_response(),
     };
 
-    let file_name = match path.file_name().and_then(|s| s.to_str()) {
-        Some(name) => name.to_string(),
-        None => "recording".to_string(),
-    };
-
-    let file = match tokio::fs::File::open(&path).await {
-        Ok(file) => file,
-        Err(_) => return (StatusCode::NOT_FOUND, "Not found").into_response(),
-    };
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
+    let file_name = download_filename(&path);
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_DISPOSITION,
@@ -512,9 +501,24 @@ async fn download_recording(
     );
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_static("application/json"),
     );
 
+    if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        let bytes = match get_cast_bytes(&state, path).await {
+            Ok(bytes) => bytes,
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read").into_response(),
+        };
+        let body = Body::from(bytes);
+        return (StatusCode::OK, headers, body).into_response();
+    }
+
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(_) => return (StatusCode::NOT_FOUND, "Not found").into_response(),
+    };
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
     (StatusCode::OK, headers, body).into_response()
 }
 
@@ -715,6 +719,18 @@ fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
         Ok(decoded)
     } else {
         Ok(bytes)
+    }
+}
+
+fn download_filename(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("recording.cast");
+    if let Some(stripped) = name.strip_suffix(".zst") {
+        stripped.to_string()
+    } else {
+        name.to_string()
     }
 }
 
