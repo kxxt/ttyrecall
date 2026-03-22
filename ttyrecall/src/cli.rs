@@ -32,7 +32,7 @@ pub enum Command {
     // We want to support two kinds of web interfaces,
     // One that could be configured by sysadmin as a service to be used by all users,
     // and one that a user could launch to view their own archive.
-    #[clap(about = "Run ttyrecall web interface without previllege")]
+    #[clap(about = "Run ttyrecall web interface service")]
     WebService {
         #[clap(long, help = "Path to config file, /etc/ttyrecall/web.toml by default")]
         config: Option<PathBuf>,

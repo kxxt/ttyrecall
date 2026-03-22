@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ttyrecall viewer</title>
+    <link rel="stylesheet" href="/node_modules/asciinema-player/dist/bundle/asciinema-player.css" />
+    <link rel="stylesheet" href="/assets/view.css" />
+  </head>
+  <body>
+    <header>
+      <a href="/">Back</a>
+      <div id="title">Recording</div>
+    </header>
+    <div id="player"></div>
+    <div id="fallback" class="fallback hidden">
+      Player failed to load. You can still <a id="downloadLink" href="#">download the recording</a>.
+    </div>
+
+    <script src="/node_modules/asciinema-player/dist/bundle/asciinema-player.min.js"></script>
+    <script type="module" src="/assets/view.js"></script>
+  </body>
+</html>

@@ -10,6 +10,7 @@ mod daemon;
 mod manager;
 mod player;
 mod session;
+mod web;
 
 #[tokio::main(worker_threads = 2)]
 async fn main() -> color_eyre::Result<()> {
@@ -28,6 +29,13 @@ async fn main() -> color_eyre::Result<()> {
         }
         Command::Play { files } => {
             player::play(files).await?;
+        }
+        Command::WebService { config } => {
+            web::run(web::WebMode::Service, config, false).await?;
+        }
+        Command::Web { open, config } => {
+            let mode = web::current_user_mode()?;
+            web::run(mode, config, open).await?;
         }
         _ => {
             bail!("Sorry, this feature hasn't been implemented.");

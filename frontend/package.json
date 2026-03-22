@@ -1,0 +1,9 @@
+{
+  "name": "ttyrecall-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Web UI for ttyrecall",
+  "dependencies": {
+    "asciinema-player": "^3.15"
+  }
+}

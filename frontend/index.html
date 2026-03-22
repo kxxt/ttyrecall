@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ttyrecall</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>ttyrecall</h1>
+      <div class="user" id="userLabel"></div>
+    </header>
+
+    <div id="loginPanel" class="login card">
+      <h2>Sign in</h2>
+      <div>
+        <label for="username">Username</label>
+        <input id="username" autocomplete="username" />
+      </div>
+      <div style="margin-top: 12px;">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" />
+      </div>
+      <div style="margin-top: 16px;">
+        <button id="loginButton">Login</button>
+      </div>
+      <div id="loginError" class="muted" style="margin-top: 12px;"></div>
+    </div>
+
+    <main id="appPanel" class="hidden">
+      <div class="grid">
+        <div class="card">
+          <h2>Activity</h2>
+          <div id="heatmap" class="heatmap"></div>
+          <div class="legend">
+            <span style="background: var(--heat-0);"></span> 0
+            <span style="background: var(--heat-1);"></span> 1-2
+            <span style="background: var(--heat-2);"></span> 3-5
+            <span style="background: var(--heat-3);"></span> 6-9
+            <span style="background: var(--heat-4);"></span> 10+
+          </div>
+        </div>
+        <div class="card">
+          <h2>Bulk Actions</h2>
+          <div class="actions">
+            <button id="refreshButton" class="secondary">Refresh</button>
+            <button id="downloadButton">Download Selected</button>
+            <button id="deleteButton" class="secondary">Delete Selected</button>
+            <button id="logoutButton" class="secondary">Logout</button>
+          </div>
+          <div class="muted" style="margin-top: 12px;">Tip: select multiple recordings with the checkboxes.</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 20px;">
+        <h2>Recordings</h2>
+        <div style="overflow-x: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="selectAll" /></th>
+                <th>Date</th>
+                <th>Name</th>
+                <th>Size</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="recordingsBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyState" class="empty hidden">No recordings found.</div>
+      </div>
+    </main>
+
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

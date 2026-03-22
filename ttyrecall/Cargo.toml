@@ -12,7 +12,7 @@ ttyrecall-common = { path = "../ttyrecall-common", features = ["user"] }
 env_logger = "0.10"
 libc = "0.2"
 log = "0.4"
-tokio = { version = "1.43", features = ["macros", "time", "rt", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1.43", features = ["macros", "time", "rt", "rt-multi-thread", "net", "signal", "fs"] }
 bstr = { version = "1.10.0", features = ["serde"] }
 nix = { version = "0.29.0", features = ["fs", "user"] }
 chrono = "0.4.38"
@@ -25,6 +25,12 @@ toml = "0.8.19"
 zstd = "0.13.2"
 clap_complete = "4.5.32"
 thiserror = "1.0.64"
+axum = "0.7.9"
+tokio-util = { version = "0.7.12", features = ["io"] }
+base64 = "0.22.1"
+rand = "0.8.5"
+pam = "0.8.0"
+tower-http = { version = "0.5.2", features = ["fs"] }
 
 [[bin]]
 name = "ttyrecall"

@@ -1,0 +1,33 @@
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: #0b0f14;
+  color: #e5e7eb;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: #0f172a;
+  border-bottom: 1px solid #1f2937;
+}
+
+a {
+  color: #38bdf8;
+  text-decoration: none;
+}
+
+#player {
+  padding: 20px;
+}
+
+.fallback {
+  padding: 20px;
+  color: #94a3b8;
+}
+
+.hidden {
+  display: none;
+}
