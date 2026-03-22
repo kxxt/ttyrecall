@@ -63,7 +63,6 @@ zstd -cd /var/lib/ttyrecall/1000/2024/10/03/konsole-pty8-12:19.cast.zst | asciin
 
 # TODO
 
-- [ ] Implement a player that could directly take zstd compressed asciicast v2 files.
 - [ ] Implement a TUI interface to easily browse and manage the recordings.
 - [ ] Implement a web interface to easily browse and manage the recordings.
 - [ ] Automatically remove some old recordings in some way.
