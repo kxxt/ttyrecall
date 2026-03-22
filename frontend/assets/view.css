@@ -3,6 +3,13 @@ body {
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   background: #0b0f14;
   color: #e5e7eb;
+  overflow-x: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 header {
@@ -21,6 +28,17 @@ a {
 
 #player {
   padding: 20px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  overflow: hidden;
+  height: 70vh;
+}
+
+#player .asciinema-player,
+#player .asciinema-player .ap-player {
+  width: 100% !important;
+  max-width: 100%;
 }
 
 .fallback {
