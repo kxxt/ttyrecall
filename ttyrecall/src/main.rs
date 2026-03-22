@@ -8,6 +8,7 @@ use daemon::Daemon;
 mod cli;
 mod daemon;
 mod manager;
+mod player;
 mod session;
 
 #[tokio::main(worker_threads = 2)]
@@ -24,6 +25,9 @@ async fn main() -> color_eyre::Result<()> {
         Command::GenerateCompletion { shell } => {
             let mut cmd = CommandLine::command();
             clap_complete::generate(shell, &mut cmd, env!("CARGO_CRATE_NAME"), &mut stdout())
+        }
+        Command::Play { files } => {
+            player::play(files).await?;
         }
         _ => {
             bail!("Sorry, this feature hasn't been implemented.");

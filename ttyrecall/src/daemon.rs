@@ -147,7 +147,7 @@ impl Daemon {
                                 }
                             }
                             size if size > SHORT_EVENT_SIZE => {
-                                assert!(size > size_of::<WriteEventHead>());
+                                assert!(size >= size_of::<WriteEventHead>(), "Invalid size {size}!");
                                 let event: &WriteEvent = unsafe {
                                     // SAFETY:
                                     // *const [T] encodes the number of elements and when we cast it to another fat pointer,
