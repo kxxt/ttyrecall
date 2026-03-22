@@ -14,6 +14,8 @@ const emptyState = document.getElementById("emptyState");
 const selectAll = document.getElementById("selectAll");
 const heatmapLabels = document.getElementById("heatmapLabels");
 const heatmapFilter = document.getElementById("heatmapFilter");
+const usernameInput = document.getElementById("username");
+const passwordInput = document.getElementById("password");
 
 async function api(path, options = {}) {
   const response = await fetch(path, Object.assign({
@@ -196,11 +198,23 @@ loginButton.addEventListener("click", async () => {
     });
     await loadMe();
   } catch (err) {
-    showLogin("Login failed. Please check your credentials.");
+    const message = err.message.includes("token")
+      ? "Token login is required for this web UI."
+      : "Login failed. Please check your credentials.";
+    showLogin(message);
   } finally {
     loginButton.disabled = false;
   }
 });
+
+function handleLoginKey(event) {
+  if (event.key === "Enter") {
+    loginButton.click();
+  }
+}
+
+usernameInput.addEventListener("keydown", handleLoginKey);
+passwordInput.addEventListener("keydown", handleLoginKey);
 
 document.getElementById("refreshButton").addEventListener("click", async () => {
   await loadHeatmap();
@@ -295,4 +309,28 @@ document.getElementById("heatmap").addEventListener("click", async (event) => {
   applyFilters();
 });
 
-loadMe();
+async function tryTokenLogin() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token");
+  if (!token) {
+    return false;
+  }
+  try {
+    await api("/api/token-login", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    window.history.replaceState({}, "", window.location.pathname);
+    return true;
+  } catch (err) {
+    showLogin("Token login failed. Check the token.");
+    return false;
+  }
+}
+
+async function bootstrap() {
+  await tryTokenLogin();
+  await loadMe();
+}
+
+bootstrap();

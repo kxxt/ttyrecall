@@ -9,13 +9,14 @@ use axum::{
     body::Body,
     extract::{Path as AxumPath, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{Local, NaiveDate};
+use constant_time_eq::constant_time_eq;
 use nix::unistd::{Uid, User};
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -39,6 +40,9 @@ struct WebConfigFile {
     pam_service: Option<String>,
     session_ttl_minutes: Option<u64>,
     frontend_root: Option<String>,
+    single_user_token: Option<String>,
+    single_user_uid: Option<u32>,
+    single_user_username: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +52,9 @@ struct WebConfig {
     pam_service: String,
     session_ttl: Duration,
     frontend_root: PathBuf,
+    single_user_token: Option<String>,
+    single_user_uid: Option<u32>,
+    single_user_username: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,12 +78,18 @@ struct AppState {
     session_ttl: Duration,
     single_user: Option<SingleUser>,
     frontend_root: PathBuf,
+    single_user_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LoginRequest {
     username: String,
     password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenLoginRequest {
+    token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -124,9 +137,46 @@ struct HeatmapDay {
 
 pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> color_eyre::Result<()> {
     let config = load_config(&mode, config_path)?;
-    let single_user = match mode {
+    let mut single_user = match &mode {
         WebMode::Service => None,
-        WebMode::SingleUser { uid, username } => Some(SingleUser { uid, username }),
+        WebMode::SingleUser { uid, username } => Some(SingleUser {
+            uid: *uid,
+            username: username.clone(),
+        }),
+    };
+    if let Some(single_user) = single_user.as_mut() {
+        if let Some(username) = config.single_user_username.clone() {
+            single_user.username = username;
+        }
+        if let Some(uid) = config.single_user_uid {
+            single_user.uid = uid;
+        }
+        if config.single_user_uid.is_some() && config.single_user_username.is_none() {
+            if let Ok(Some(user)) = User::from_uid(Uid::from_raw(single_user.uid)) {
+                single_user.username = user.name;
+            }
+        }
+        if config.single_user_username.is_some() && config.single_user_uid.is_none() {
+            if let Ok(Some(user)) = User::from_name(&single_user.username) {
+                single_user.uid = user.uid.as_raw();
+            }
+        }
+    }
+    let single_user_token = match &mode {
+        WebMode::Service => None,
+        WebMode::SingleUser { .. } => {
+            let token = config
+                .single_user_token
+                .clone()
+                .unwrap_or_else(new_session_token);
+            let display_bind = display_bind(&config.bind);
+            println!("Single user token: {token}");
+            println!(
+                "Single user login URL: http://{}/?token={}",
+                display_bind, token
+            );
+            Some(token)
+        }
     };
 
     let state = Arc::new(AppState {
@@ -136,6 +186,7 @@ pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> col
         session_ttl: config.session_ttl,
         single_user,
         frontend_root: config.frontend_root.clone(),
+        single_user_token,
     });
 
     let app = Router::new()
@@ -147,6 +198,7 @@ pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> col
             ServeDir::new(config.frontend_root.join("node_modules")),
         )
         .route("/api/login", post(login))
+        .route("/api/token-login", post(token_login))
         .route("/api/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/recordings", get(list_recordings))
@@ -201,6 +253,9 @@ fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::Result<WebC
             .frontend_root
             .map(PathBuf::from)
             .unwrap_or_else(default_frontend_root),
+        single_user_token: file_config.single_user_token,
+        single_user_uid: file_config.single_user_uid,
+        single_user_username: file_config.single_user_username,
     })
 }
 
@@ -216,6 +271,15 @@ fn default_user_config_path() -> PathBuf {
 
 fn default_frontend_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("frontend")
+}
+
+fn display_bind(bind: &str) -> String {
+    if let Some(port) = bind.rsplit_once(':').map(|(_, port)| port) {
+        if bind.starts_with("0.0.0.0:") || bind.starts_with("[::]:") {
+            return format!("127.0.0.1:{port}");
+        }
+    }
+    bind.to_string()
 }
 
 async fn index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -237,14 +301,11 @@ async fn login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    if state.single_user.is_some() {
+        return (StatusCode::FORBIDDEN, "Use token login").into_response();
+    }
     if payload.username.trim().is_empty() || payload.password.is_empty() {
         return (StatusCode::BAD_REQUEST, "Missing credentials").into_response();
-    }
-
-    if let Some(single_user) = state.single_user.as_ref() {
-        if payload.username != single_user.username {
-            return (StatusCode::FORBIDDEN, "Not allowed").into_response();
-        }
     }
 
     match pam::authenticate(&state.pam_service, &payload.username, &payload.password) {
@@ -257,33 +318,31 @@ async fn login(
         _ => return (StatusCode::UNAUTHORIZED, "Unknown user").into_response(),
     };
 
-    if let Some(single_user) = state.single_user.as_ref() {
-        if user.uid.as_raw() != single_user.uid {
-            return (StatusCode::FORBIDDEN, "Not allowed").into_response();
-        }
+    create_session(&state, payload.username, user.uid.as_raw()).await
+}
+
+async fn token_login(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<TokenLoginRequest>,
+) -> impl IntoResponse {
+    let single_user = match state.single_user.as_ref() {
+        Some(single_user) => single_user,
+        None => return (StatusCode::FORBIDDEN, "Not available").into_response(),
+    };
+    let token = match state.single_user_token.as_deref() {
+        Some(token) => token,
+        None => return (StatusCode::FORBIDDEN, "Not available").into_response(),
+    };
+    if !constant_time_eq(payload.token.as_bytes(), token.as_bytes()) {
+        return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
     }
 
-    let token = new_session_token();
-    let session = Session {
-        username: payload.username.clone(),
-        uid: user.uid.as_raw(),
-        last_seen: Instant::now(),
-    };
-    state.sessions.write().await.insert(token.clone(), session);
-
-    let cookie = format!("session={}; HttpOnly; SameSite=Strict; Path=/", token);
-    let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
-
-    (
-        StatusCode::OK,
-        headers,
-        Json(MeResponse {
-            username: payload.username,
-            uid: user.uid.as_raw(),
-        }),
+    create_session(
+        &state,
+        single_user.username.clone(),
+        single_user.uid,
     )
-        .into_response()
+    .await
 }
 
 async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
@@ -307,6 +366,27 @@ async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl Into
         .into_response(),
         Err(status) => (status, "Not authenticated").into_response(),
     }
+}
+
+async fn create_session(state: &AppState, username: String, uid: u32) -> Response {
+    let token = new_session_token();
+    let session = Session {
+        username: username.clone(),
+        uid,
+        last_seen: Instant::now(),
+    };
+    state.sessions.write().await.insert(token.clone(), session);
+
+    let cookie = format!("session={}; HttpOnly; SameSite=Strict; Path=/", token);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+
+    (
+        StatusCode::OK,
+        headers,
+        Json(MeResponse { username, uid }),
+    )
+        .into_response()
 }
 
 async fn list_recordings(
@@ -627,9 +707,25 @@ fn date_from_path(user_root: &Path, path: &Path) -> Option<NaiveDate> {
 }
 
 pub fn current_user_mode() -> color_eyre::Result<WebMode> {
-    let uid = Uid::current().as_raw();
-    let username = User::from_uid(Uid::current())?
+    let mut uid = Uid::current().as_raw();
+    let mut username = User::from_uid(Uid::current())?
         .map(|user| user.name)
         .unwrap_or_else(|| uid.to_string());
+
+    if uid == 0 {
+        if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+            if let Ok(parsed) = sudo_uid.parse::<u32>() {
+                uid = parsed;
+            }
+        }
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            username = sudo_user;
+        }
+        if username == "root" && uid != 0 {
+            if let Ok(Some(user)) = User::from_uid(Uid::from_raw(uid)) {
+                username = user.name;
+            }
+        }
+    }
     Ok(WebMode::SingleUser { uid, username })
 }

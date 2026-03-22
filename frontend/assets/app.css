@@ -130,7 +130,7 @@ button:disabled {
   overflow-y: hidden;
   max-width: 100%;
   padding: 8px 4px 2px;
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: both-edges;
   -webkit-overflow-scrolling: touch;
 }
 
