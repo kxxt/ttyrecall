@@ -2,6 +2,7 @@ const state = {
   user: null,
   recordings: [],
   filterDate: null,
+  viewMode: "list",
 };
 
 const loginPanel = document.getElementById("loginPanel");
@@ -17,6 +18,12 @@ const heatmapFilter = document.getElementById("heatmapFilter");
 const usernameInput = document.getElementById("username");
 const passwordInput = document.getElementById("password");
 const themeToggle = document.getElementById("themeToggle");
+const listView = document.getElementById("listView");
+const galleryView = document.getElementById("galleryView");
+const viewListButton = document.getElementById("viewList");
+const viewGalleryButton = document.getElementById("viewGallery");
+
+const galleryPlayers = new Map();
 
 async function api(path, options = {}) {
   const response = await fetch(path, Object.assign({
@@ -86,12 +93,119 @@ function renderRecordings(recordings) {
   }
 }
 
+function renderGallery(recordings) {
+  disposeGalleryPlayers();
+  galleryView.innerHTML = "";
+  if (!recordings.length) {
+    emptyState.classList.remove("hidden");
+    return;
+  }
+  emptyState.classList.add("hidden");
+  for (const rec of recordings) {
+    const card = document.createElement("div");
+    card.className = "gallery-card";
+    card.innerHTML = `
+      <div class="preview" data-id="${rec.id}" data-cast="/api/recordings/${rec.id}/cast"></div>
+      <div class="gallery-meta">
+        <div class="gallery-title">${rec.name} ${rec.compressed ? '<span class="badge">zst</span>' : ''}</div>
+        <div class="gallery-sub">${rec.display} · ${formatBytes(rec.size)}</div>
+      </div>
+      <div class="table-actions">
+        <button data-view="${rec.id}" class="secondary">View</button>
+        <button data-download="${rec.id}">Download</button>
+        <button data-delete="${rec.id}" class="secondary">Delete</button>
+      </div>
+    `;
+    galleryView.appendChild(card);
+  }
+  initGalleryPlayers();
+}
+
+function initGalleryPlayers() {
+  if (!window.AsciinemaPlayer) {
+    return;
+  }
+  const previews = galleryView.querySelectorAll(".preview");
+  previews.forEach((preview) => {
+    const castUrl = preview.dataset.cast;
+    if (!castUrl) {
+      return;
+    }
+    const player = window.AsciinemaPlayer.create(castUrl, preview, {
+      fit: "width",
+      idleTimeLimit: 2,
+    });
+    if (player && player.seek) {
+      player.seek("50%");
+    }
+    galleryPlayers.set(preview, player);
+    preview.addEventListener("mouseenter", () => {
+      if (player && player.seek) {
+        player.seek(0);
+      }
+      if (player && player.play) {
+        player.play();
+      }
+    });
+    preview.addEventListener("mouseleave", () => {
+      if (player && player.pause) {
+        player.pause();
+      }
+      if (player && player.seek) {
+        player.seek("50%");
+      }
+    });
+  });
+}
+
+function disposeGalleryPlayers() {
+  for (const [node, player] of galleryPlayers.entries()) {
+    if (player && player.dispose) {
+      player.dispose();
+    }
+    if (node) {
+      node.replaceChildren();
+    }
+  }
+  galleryPlayers.clear();
+}
+
+function setViewMode(mode) {
+  state.viewMode = mode;
+  localStorage.setItem("ttyrecall-view", mode);
+  updateViewMode();
+  applyFilters();
+}
+
+function updateViewMode() {
+  const mode = state.viewMode || "list";
+  const listActive = mode === "list";
+  listView.classList.toggle("hidden", !listActive);
+  galleryView.classList.toggle("hidden", listActive);
+  viewListButton.classList.toggle("active", listActive);
+  viewGalleryButton.classList.toggle("active", !listActive);
+  if (listActive) {
+    disposeGalleryPlayers();
+  }
+}
+
 function applyFilters() {
   let records = state.recordings;
   if (state.filterDate) {
     records = records.filter((rec) => rec.date === state.filterDate);
   }
-  renderRecordings(records);
+  if (!records.length) {
+    emptyState.classList.remove("hidden");
+    renderRecordings([]);
+    renderGallery([]);
+    return;
+  }
+  emptyState.classList.add("hidden");
+  if (state.viewMode === "gallery") {
+    renderGallery(records);
+  } else {
+    renderRecordings(records);
+  }
   updateFilterLabel();
 }
 
@@ -287,6 +401,27 @@ recordingsBody.addEventListener("click", async (event) => {
   }
 });
 
+galleryView.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (target.dataset.view) {
+    window.open(`/view/${target.dataset.view}`, "_blank");
+  }
+  if (target.dataset.download) {
+    window.open(`/api/recordings/${target.dataset.download}/download`, "_blank");
+  }
+  if (target.dataset.delete) {
+    if (!confirm("Delete this recording?")) {
+      return;
+    }
+    await api("/api/recordings/delete", {
+      method: "POST",
+      body: JSON.stringify({ ids: [target.dataset.delete] }),
+    });
+    await loadRecordings();
+    await loadHeatmap();
+  }
+});
+
 heatmapFilter.addEventListener("click", async (event) => {
   const target = event.target;
   if (target && target.id === "clearHeatmapFilter") {
@@ -331,6 +466,11 @@ async function tryTokenLogin() {
 
 async function bootstrap() {
   initThemeToggle();
+  const storedView = localStorage.getItem("ttyrecall-view") || "list";
+  state.viewMode = storedView === "gallery" ? "gallery" : "list";
+  updateViewMode();
+  viewListButton.addEventListener("click", () => setViewMode("list"));
+  viewGalleryButton.addEventListener("click", () => setViewMode("gallery"));
   await tryTokenLogin();
   await loadMe();
 }

@@ -237,6 +237,70 @@ th {
   gap: 6px;
 }
 
+.recordings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.view-toggle button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.gallery-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.preview {
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0b0f14;
+  min-height: 140px;
+}
+
+.preview .asciinema-player,
+.preview .asciinema-player .ap-player {
+  width: 100% !important;
+  max-width: 100%;
+}
+
+.gallery-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gallery-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.gallery-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

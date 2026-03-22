@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use axum::{
@@ -79,6 +79,7 @@ struct AppState {
     single_user: Option<SingleUser>,
     frontend_root: PathBuf,
     single_user_token: Option<String>,
+    cast_cache: tokio::sync::Mutex<CastCache>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +136,58 @@ struct HeatmapDay {
     count: usize,
 }
 
+const CAST_CACHE_MAX_ENTRIES: usize = 64;
+
+#[derive(Debug)]
+struct CastCacheEntry {
+    mtime: SystemTime,
+    bytes: Vec<u8>,
+    last_access: Instant,
+}
+
+#[derive(Debug, Default)]
+struct CastCache {
+    entries: HashMap<PathBuf, CastCacheEntry>,
+}
+
+impl CastCache {
+    fn get(&mut self, path: &Path, mtime: SystemTime) -> Option<Vec<u8>> {
+        if let Some(entry) = self.entries.get_mut(path) {
+            if entry.mtime == mtime {
+                entry.last_access = Instant::now();
+                return Some(entry.bytes.clone());
+            }
+        }
+        self.entries.remove(path);
+        None
+    }
+
+    fn insert(&mut self, path: PathBuf, mtime: SystemTime, bytes: Vec<u8>) {
+        self.entries.insert(
+            path,
+            CastCacheEntry {
+                mtime,
+                bytes,
+                last_access: Instant::now(),
+            },
+        );
+        if self.entries.len() > CAST_CACHE_MAX_ENTRIES {
+            self.evict_oldest();
+        }
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some((oldest, _)) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_access)
+            .map(|(path, entry)| (path.clone(), entry.last_access))
+        {
+            self.entries.remove(&oldest);
+        }
+    }
+}
+
 pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> color_eyre::Result<()> {
     let config = load_config(&mode, config_path)?;
     let mut single_user = match &mode {
@@ -187,6 +240,7 @@ pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> col
         single_user,
         frontend_root: config.frontend_root.clone(),
         single_user_token,
+        cast_cache: tokio::sync::Mutex::new(CastCache::default()),
     });
 
     let app = Router::new()
@@ -479,9 +533,9 @@ async fn cast_recording(
         None => return (StatusCode::NOT_FOUND, "Not found").into_response(),
     };
 
-    let bytes = match tokio::task::spawn_blocking(move || read_cast_bytes(&path)).await {
-        Ok(Ok(bytes)) => bytes,
-        _ => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read").into_response(),
+    let bytes = match get_cast_bytes(&state, path).await {
+        Ok(bytes) => bytes,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read").into_response(),
     };
 
     let mut headers = HeaderMap::new();
@@ -662,6 +716,27 @@ fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     } else {
         Ok(bytes)
     }
+}
+
+async fn get_cast_bytes(
+    state: &AppState,
+    path: PathBuf,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let metadata = tokio::fs::metadata(&path).await?;
+    let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    {
+        let mut cache = state.cast_cache.lock().await;
+        if let Some(bytes) = cache.get(&path, mtime) {
+            return Ok(bytes);
+        }
+    }
+
+    let path_for_read = path.clone();
+    let bytes = tokio::task::spawn_blocking(move || read_cast_bytes(&path_for_read)).await??;
+
+    let mut cache = state.cast_cache.lock().await;
+    cache.insert(path, mtime, bytes.clone());
+    Ok(bytes)
 }
 
 fn heatmap_for_user(storage_root: &Path, uid: u32) -> Vec<HeatmapDay> {
