@@ -135,7 +135,6 @@ pub fn tty_do_resize(ctx: FExitContext) -> u32 {
 // C
 // static ssize_t pty_write(struct tty_struct *tty, const u8 *buf, size_t c)
 fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
-    trace!(&ctx, "function pty_write called");
     // Arguments
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let buf: *const u8 = unsafe { ctx.arg(1) };
@@ -150,11 +149,13 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
     if !should_trace(id) {
         return Ok(3);
     }
+    trace!(&ctx, "function pty_write called");
     let driver = unsafe { bpf_probe_read_kernel(&(*tty).driver).unwrap() };
     // https://elixir.bootlin.com/linux/v6.11/source/include/linux/tty_driver.h#L568-L571
     let subtype = unsafe { bpf_probe_read_kernel(&(*driver).subtype).unwrap() };
     const PTY_TYPE_SLAVE: i16 = 0x0002;
     if subtype != PTY_TYPE_SLAVE {
+        trace!(&ctx, "not pty slave");
         return Ok(0);
     }
     let time = unsafe { bpf_ktime_get_tai_ns() };
@@ -207,8 +208,14 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
                     bpf_ringbuf_discard_dynptr(dynptr.as_mut_ptr(), 0);
                     return Err(u32::MAX);
                 }
-                raw_bpf_probe_read_kernel(chunk, chunk_size as u32, buf.byte_add(offset).cast());
-                // MAYBE check result?
+                let ret = raw_bpf_probe_read_kernel(
+                    chunk,
+                    chunk_size as u32,
+                    buf.byte_add(offset).cast(),
+                );
+                if ret < 0 {
+                    warn!(&ctx, "Failed to read kernel memory")
+                }
             } else {
                 let Some(intermediate) = INTERMEDIATE_BUFFER.get_ptr(0) else {
                     // Should not happen
@@ -216,12 +223,14 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
                     return Err(u32::MAX);
                 };
                 let intermediate = intermediate as *mut c_void;
-                raw_bpf_probe_read_kernel(
+                let ret = raw_bpf_probe_read_kernel(
                     intermediate,
                     chunk_size as u32,
                     buf.byte_add(offset).cast(),
                 );
-                // MAYBE check result?
+                if ret < 0 {
+                    warn!(&ctx, "Failed to read kernel memory")
+                }
                 bpf_dynptr_write(
                     dynptr.as_mut_ptr(),
                     (base_offset + offset) as u32,
