@@ -153,9 +153,9 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
     let driver = unsafe { bpf_probe_read_kernel(&(*tty).driver).unwrap() };
     // https://elixir.bootlin.com/linux/v6.11/source/include/linux/tty_driver.h#L568-L571
     let subtype = unsafe { bpf_probe_read_kernel(&(*driver).subtype).unwrap() };
-    const PTY_TYPE_SLAVE: i16 = 0x0002;
+    const PTY_TYPE_SLAVE: u32 = 0x0002;
     if subtype != PTY_TYPE_SLAVE {
-        trace!(&ctx, "not pty slave");
+        trace!(&ctx, "not pty slave; {}", subtype);
         return Ok(0);
     }
     let time = unsafe { bpf_ktime_get_tai_ns() };
