@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --bg: #f6f7f9;
   --card: #ffffff;
   --ink: #1f2328;
@@ -16,6 +16,12 @@
 
 * {
   box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  background-color: var(--bg);
 }
 
 body {
@@ -47,6 +53,12 @@ header h1 {
 header .user {
   font-size: 14px;
   color: var(--muted);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 main {
@@ -108,6 +120,10 @@ button.secondary {
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--accent);
+}
+
+button.secondary:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 button:disabled {
@@ -245,4 +261,47 @@ th {
   .heatmap {
     grid-template-columns: repeat(27, 12px);
   }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0f14;
+  --card: #0f172a;
+  --ink: #e5e7eb;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-dark: #0ea5e9;
+  --border: #1f2937;
+  --heat-0: #1f2937;
+  --heat-1: #134e4a;
+  --heat-2: #0f766e;
+  --heat-3: #14b8a6;
+  --heat-4: #2dd4bf;
+}
+
+:root[data-theme="dark"] body {
+  background: radial-gradient(circle at 20% 20%, #0f172a 0%, #0b0f14 60%) no-repeat;
+  background-color: var(--bg);
+}
+
+:root[data-theme="dark"] header {
+  background: rgba(15, 23, 42, 0.9);
+}
+
+:root[data-theme="dark"] .card {
+  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.5);
+}
+
+:root[data-theme="dark"] input {
+  background: #0b1220;
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] th,
+:root[data-theme="dark"] td {
+  border-bottom: 1px solid var(--border);
+}
+
+:root[data-theme="dark"] .badge {
+  background: #1e293b;
+  color: #c7d2fe;
 }

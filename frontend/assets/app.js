@@ -16,6 +16,7 @@ const heatmapLabels = document.getElementById("heatmapLabels");
 const heatmapFilter = document.getElementById("heatmapFilter");
 const usernameInput = document.getElementById("username");
 const passwordInput = document.getElementById("password");
+const themeToggle = document.getElementById("themeToggle");
 
 async function api(path, options = {}) {
   const response = await fetch(path, Object.assign({
@@ -329,8 +330,49 @@ async function tryTokenLogin() {
 }
 
 async function bootstrap() {
+  initThemeToggle();
   await tryTokenLogin();
   await loadMe();
 }
 
 bootstrap();
+
+function applyTheme(theme) {
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.setAttribute("data-theme", theme);
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  updateThemeLabel(theme);
+}
+
+function initThemeToggle() {
+  const stored = localStorage.getItem("ttyrecall-theme") || "system";
+  applyTheme(stored);
+  if (!themeToggle) {
+    return;
+  }
+  updateThemeLabel(stored);
+  themeToggle.addEventListener("click", () => {
+    const current = localStorage.getItem("ttyrecall-theme") || "system";
+    let next = "system";
+    if (current === "system") {
+      next = "dark";
+    } else if (current === "dark") {
+      next = "light";
+    } else {
+      next = "system";
+    }
+    applyTheme(next);
+    localStorage.setItem("ttyrecall-theme", next);
+  });
+}
+
+function updateThemeLabel(theme) {
+  if (!themeToggle) {
+    return;
+  }
+  const label = theme === "dark" ? "Theme: Dark" : theme === "light" ? "Theme: Light" : "Theme: System";
+  themeToggle.textContent = label;
+  themeToggle.setAttribute("aria-pressed", theme === "dark");
+}
