@@ -139,7 +139,12 @@ function initGalleryPlayers() {
       player.seek("50%");
     }
     galleryPlayers.set(preview, player);
-    preview.addEventListener("mouseenter", () => {
+    let leaveTimer = null;
+    preview.addEventListener("pointerenter", () => {
+      if (leaveTimer) {
+        clearTimeout(leaveTimer);
+        leaveTimer = null;
+      }
       if (player && player.seek) {
         player.seek(0);
       }
@@ -147,13 +152,15 @@ function initGalleryPlayers() {
         player.play();
       }
     });
-    preview.addEventListener("mouseleave", () => {
-      if (player && player.pause) {
-        player.pause();
-      }
-      if (player && player.seek) {
-        player.seek("50%");
-      }
+    preview.addEventListener("pointerleave", () => {
+      leaveTimer = window.setTimeout(() => {
+        if (player && player.pause) {
+          player.pause();
+        }
+        if (player && player.seek) {
+          player.seek("50%");
+        }
+      }, 120);
     });
   });
 }
