@@ -1,6 +1,7 @@
 const state = {
   user: null,
   recordings: [],
+  filterDate: null,
 };
 
 const loginPanel = document.getElementById("loginPanel");
@@ -11,6 +12,8 @@ const userLabel = document.getElementById("userLabel");
 const recordingsBody = document.getElementById("recordingsBody");
 const emptyState = document.getElementById("emptyState");
 const selectAll = document.getElementById("selectAll");
+const heatmapLabels = document.getElementById("heatmapLabels");
+const heatmapFilter = document.getElementById("heatmapFilter");
 
 async function api(path, options = {}) {
   const response = await fetch(path, Object.assign({
@@ -54,14 +57,14 @@ function formatBytes(bytes) {
   return `${value.toFixed(value < 10 && idx > 0 ? 1 : 0)} ${units[idx]}`;
 }
 
-function renderRecordings() {
+function renderRecordings(recordings) {
   recordingsBody.innerHTML = "";
-  if (!state.recordings.length) {
+  if (!recordings.length) {
     emptyState.classList.remove("hidden");
     return;
   }
   emptyState.classList.add("hidden");
-  for (const rec of state.recordings) {
+  for (const rec of recordings) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><input type="checkbox" data-id="${rec.id}" /></td>
@@ -80,6 +83,23 @@ function renderRecordings() {
   }
 }
 
+function applyFilters() {
+  let records = state.recordings;
+  if (state.filterDate) {
+    records = records.filter((rec) => rec.date === state.filterDate);
+  }
+  renderRecordings(records);
+  updateFilterLabel();
+}
+
+function updateFilterLabel() {
+  if (state.filterDate) {
+    heatmapFilter.innerHTML = `Showing recordings for <strong>${state.filterDate}</strong> · <button id="clearHeatmapFilter" class="secondary">Clear</button>`;
+  } else {
+    heatmapFilter.textContent = "";
+  }
+}
+
 function selectedIds() {
   const checked = recordingsBody.querySelectorAll("input[type=checkbox]:checked");
   return Array.from(checked).map((el) => el.dataset.id);
@@ -88,7 +108,7 @@ function selectedIds() {
 async function loadRecordings() {
   const data = await api("/api/recordings");
   state.recordings = data.recordings || [];
-  renderRecordings();
+  applyFilters();
 }
 
 function colorForCount(count) {
@@ -110,6 +130,23 @@ async function loadHeatmap() {
   const heatmap = document.getElementById("heatmap");
   const heatmapScroller = heatmap.parentElement;
   heatmap.innerHTML = "";
+  heatmapLabels.innerHTML = "";
+  const weeks = 53;
+  let lastMonth = null;
+  for (let week = 0; week < weeks; week++) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + week * 7);
+    const month = date.toLocaleString("en-US", { month: "short" });
+    const label = document.createElement("div");
+    label.className = "label";
+    if (month !== lastMonth) {
+      label.textContent = month;
+      lastMonth = month;
+    } else {
+      label.textContent = "";
+    }
+    heatmapLabels.appendChild(label);
+  }
   for (let i = 0; i < days; i++) {
     const date = new Date(start);
     date.setDate(start.getDate() + i);
@@ -119,6 +156,10 @@ async function loadHeatmap() {
     cell.className = "day";
     cell.style.background = colorForCount(count);
     cell.title = `${key}: ${count} recording${count === 1 ? "" : "s"}`;
+    cell.dataset.date = key;
+    if (state.filterDate === key) {
+      cell.classList.add("selected");
+    }
     heatmap.appendChild(cell);
   }
   if (heatmapScroller) {
@@ -229,6 +270,29 @@ recordingsBody.addEventListener("click", async (event) => {
     await loadRecordings();
     await loadHeatmap();
   }
+});
+
+heatmapFilter.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (target && target.id === "clearHeatmapFilter") {
+    state.filterDate = null;
+    await loadHeatmap();
+    applyFilters();
+  }
+});
+
+document.getElementById("heatmap").addEventListener("click", async (event) => {
+  const target = event.target;
+  if (!target.classList.contains("day")) {
+    return;
+  }
+  const date = target.dataset.date;
+  if (!date) {
+    return;
+  }
+  state.filterDate = state.filterDate === date ? null : date;
+  await loadHeatmap();
+  applyFilters();
 });
 
 loadMe();

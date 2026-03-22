@@ -95,6 +95,7 @@ struct RecordingInfo {
     id: String,
     name: String,
     display: String,
+    date: String,
     size: u64,
     compressed: bool,
 }
@@ -513,12 +514,16 @@ fn recording_info(user_root: &Path, path: &Path) -> Option<RecordingInfo> {
 
     let compressed = file_name.ends_with(".zst");
     let display = format_display(rel).unwrap_or_else(|| file_name.clone());
+    let date = date_from_path(user_root, path)
+        .map(|value| value.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
     let size = path.metadata().ok()?.len();
 
     Some(RecordingInfo {
         id,
         name: file_name,
         display,
+        date,
         size,
         compressed,
     })

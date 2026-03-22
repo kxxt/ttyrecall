@@ -130,8 +130,27 @@ button:disabled {
   overflow-y: hidden;
   max-width: 100%;
   padding: 8px 4px 2px;
-  scrollbar-gutter: both-edges;
+  scrollbar-gutter: stable both-edges;
   -webkit-overflow-scrolling: touch;
+}
+
+.heatmap-labels {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 12px;
+  gap: 3px;
+  height: 16px;
+  align-items: end;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  overflow: visible;
+}
+
+.heatmap-labels .label {
+  text-align: left;
+  white-space: nowrap;
 }
 
 .heatmap {
@@ -148,6 +167,16 @@ button:disabled {
   border-radius: 3px;
   background: var(--heat-0);
   border: 1px solid rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+}
+
+.heatmap .day.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.heatmap-filter {
+  margin-top: 6px;
 }
 
 .legend {
