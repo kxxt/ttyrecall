@@ -108,6 +108,7 @@ async function loadHeatmap() {
   start.setDate(start.getDate() - (days - 1));
 
   const heatmap = document.getElementById("heatmap");
+  const heatmapScroller = heatmap.parentElement;
   heatmap.innerHTML = "";
   for (let i = 0; i < days; i++) {
     const date = new Date(start);
@@ -119,6 +120,14 @@ async function loadHeatmap() {
     cell.style.background = colorForCount(count);
     cell.title = `${key}: ${count} recording${count === 1 ? "" : "s"}`;
     heatmap.appendChild(cell);
+  }
+  if (heatmapScroller) {
+    requestAnimationFrame(() => {
+      heatmapScroller.scrollLeft = Math.max(
+        0,
+        heatmapScroller.scrollWidth - heatmapScroller.clientWidth,
+      );
+    });
   }
 }
 
