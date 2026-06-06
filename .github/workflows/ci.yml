@@ -41,7 +41,7 @@ jobs:
       - &install_bpf_native_dependencies
         name: Install native/eBPF dependencies
         env:
-          APT_PACKAGES: clang libclang-dev libelf-dev libpam0g-dev llvm pkg-config zlib1g-dev
+          APT_PACKAGES: clang libclang-dev libelf-dev libpam0g-dev llvm pkg-config zlib1g-dev libbpf-dev
         run: |
           sudo apt-get update
           sudo apt-get install -y ${APT_PACKAGES}
