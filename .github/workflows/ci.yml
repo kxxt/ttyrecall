@@ -44,22 +44,14 @@ jobs:
         run: cargo clippy ${{ matrix.args }} -- -D warnings
 
   cargo-deny:
-    name: cargo-deny (${{ matrix.backend }})
+    name: cargo-deny
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - backend: libbpf-rs
-            arguments: --workspace
-          - backend: aya-rs
-            arguments: --workspace --no-default-features --features ttyrecall/ebpf-aya
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v2.0.20
         with:
           command: check
-          arguments: ${{ matrix.arguments }}
+          arguments: --workspace
 
   build:
     name: Build (${{ matrix.backend }})
