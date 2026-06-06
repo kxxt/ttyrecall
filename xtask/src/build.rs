@@ -3,7 +3,10 @@ use std::process::Command;
 use anyhow::Context as _;
 use clap::Parser;
 
-use crate::build_ebpf::{build_ebpf, Architecture, Backend, Options as BuildOptions};
+use crate::{
+    build_ebpf::{build_ebpf, Architecture, Backend, Options as BuildOptions},
+    build_frontend::{build_frontend, Options as FrontendOptions},
+};
 
 #[derive(Debug, Parser)]
 pub struct Options {
@@ -18,6 +21,12 @@ pub struct Options {
     pub release: bool,
     #[clap(long)]
     pub disable_resource_saving: bool,
+    /// Skip building the web frontend
+    #[clap(long)]
+    pub skip_frontend: bool,
+    /// Skip installing frontend dependencies before building
+    #[clap(long)]
+    pub skip_frontend_deps: bool,
 }
 
 /// Build the project
@@ -47,6 +56,12 @@ pub fn build(opts: Options) -> Result<(), anyhow::Error> {
         disable_resource_saving: opts.disable_resource_saving,
     })
     .context("Error while building eBPF program")?;
+    if !opts.skip_frontend {
+        build_frontend(FrontendOptions {
+            skip_frontend_deps: opts.skip_frontend_deps,
+        })
+        .context("Error while building frontend")?;
+    }
     build_project(&opts).context("Error while building userspace application")?;
     Ok(())
 }

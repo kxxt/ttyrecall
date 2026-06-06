@@ -24,6 +24,12 @@ pub struct Options {
     pub runner: String,
     #[clap(long)]
     pub disable_resource_saving: bool,
+    /// Skip building the web frontend
+    #[clap(long)]
+    pub skip_frontend: bool,
+    /// Skip installing frontend dependencies before building
+    #[clap(long)]
+    pub skip_frontend_deps: bool,
     /// Arguments to pass to your application
     #[clap(name = "args", last = true)]
     pub run_args: Vec<String>,
@@ -37,6 +43,8 @@ pub fn run(opts: Options) -> Result<(), anyhow::Error> {
         bpf_target: opts.bpf_target,
         release: opts.release,
         disable_resource_saving: opts.disable_resource_saving,
+        skip_frontend: opts.skip_frontend,
+        skip_frontend_deps: opts.skip_frontend_deps,
     })
     .context("Error while building project")?;
 

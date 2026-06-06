@@ -32,6 +32,8 @@ So it can be considered as [asciinema](https://asciinema.org/), but always on.
 - [x] Zstd compression
 - [x] A simple systemd service (See `ttyrecall-git` package).
 - [x] Stop a recording if it overruns a specified soft budget.
+- [x] TUI and web interfaces for browsing and managing recordings.
+
 
 Here is what the collected recordings look like:
 
@@ -65,8 +67,6 @@ zstd -cd /var/lib/ttyrecall/1000/2024/10/03/konsole-pty8-12:19.cast.zst | asciin
 
 # TODO
 
-- [ ] Implement a TUI interface to easily browse and manage the recordings.
-- [ ] Implement a web interface to easily browse and manage the recordings.
 - [ ] Automatically remove some old recordings in some way.
 - [ ] Allow users to sync the recordings to their server.
 - [ ] Search for something and we can return some sessions that mentioned it and jump to the corresponding timestamp.

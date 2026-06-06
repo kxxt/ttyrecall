@@ -1,5 +1,6 @@
 mod build;
 mod build_ebpf;
+mod build_frontend;
 mod run;
 
 use std::process::exit;
@@ -15,6 +16,7 @@ pub struct Options {
 #[derive(Debug, Parser)]
 enum Command {
     BuildEbpf(build_ebpf::Options),
+    BuildFrontend(build_frontend::Options),
     Build(build::Options),
     Run(run::Options),
 }
@@ -25,6 +27,7 @@ fn main() {
     use Command::*;
     let ret = match opts.command {
         BuildEbpf(opts) => build_ebpf::build_ebpf(opts),
+        BuildFrontend(opts) => build_frontend::build_frontend(opts),
         Run(opts) => run::run(opts),
         Build(opts) => build::build(opts),
     };
