@@ -41,18 +41,32 @@ jobs:
       - &install_bpf_native_dependencies
         name: Install native/eBPF dependencies
         env:
-          APT_PACKAGES: clang libclang-dev libelf-dev libpam0g-dev linux-tools-azure linux-cloud-tools-azure llvm pkg-config zlib1g-dev
+          APT_PACKAGES: clang libclang-dev libelf-dev libpam0g-dev llvm pkg-config zlib1g-dev
         run: |
           sudo apt-get update
           sudo apt-get install -y ${APT_PACKAGES}
       - &prepare_bpftool
         name: Prepare bpftool
         run: |
-          if ! command -v bpftool >/dev/null 2>&1; then
-            bpftool_path="$(find /usr/lib/linux-tools -path '*/bpftool' -type f | sort -V | tail -n 1)"
-            test -n "${bpftool_path}"
-            sudo ln -sf "${bpftool_path}" /usr/local/bin/bpftool
-          fi
+          case "$(uname -m)" in
+            x86_64) bpftool_arch="amd64" ;;
+            aarch64|arm64) bpftool_arch="arm64" ;;
+            *) echo "unsupported bpftool architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          curl_args=(--fail --show-error --silent --location --retry 5 --retry-delay 2 --connect-timeout 10 --max-time 120)
+          latest_url="$(curl "${curl_args[@]}" --head -o /dev/null -w '%{url_effective}' https://github.com/libbpf/bpftool/releases/latest)"
+          bpftool_tag="${latest_url##*/}"
+          bpftool_archive="bpftool-${bpftool_tag}-${bpftool_arch}.tar.gz"
+          bpftool_url="https://github.com/libbpf/bpftool/releases/download/${bpftool_tag}/${bpftool_archive}"
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "${tmpdir}"' EXIT
+          curl "${curl_args[@]}" -o "${tmpdir}/${bpftool_archive}" "${bpftool_url}"
+          curl "${curl_args[@]}" -o "${tmpdir}/${bpftool_archive}.sha256sum" "${bpftool_url}.sha256sum"
+          (cd "${tmpdir}" && sha256sum -c "${bpftool_archive}.sha256sum")
+          tar -xzf "${tmpdir}/${bpftool_archive}" -C "${tmpdir}"
+          sudo install -m 0755 "${tmpdir}/bpftool" /usr/local/bin/bpftool
           bpftool version
       - name: Install Aya eBPF linker
         if: matrix.xtask_backend == 'aya'
