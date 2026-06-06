@@ -1,8 +1,12 @@
+import { create as createPlayer } from "asciinema-player";
+
 const state = {
   user: null,
   recordings: [],
   filterDate: null,
   viewMode: "list",
+  selected: new Set(),
+  filtered: [],
 };
 
 const loginPanel = document.getElementById("loginPanel");
@@ -22,6 +26,8 @@ const listView = document.getElementById("listView");
 const galleryView = document.getElementById("galleryView");
 const viewListButton = document.getElementById("viewList");
 const viewGalleryButton = document.getElementById("viewGallery");
+const selectAllGallery = document.getElementById("selectAllGallery");
+const selectAllGalleryWrap = document.getElementById("selectAllGalleryWrap");
 
 const galleryPlayers = new Map();
 
@@ -76,8 +82,9 @@ function renderRecordings(recordings) {
   emptyState.classList.add("hidden");
   for (const rec of recordings) {
     const row = document.createElement("tr");
+    const checked = state.selected.has(rec.id) ? "checked" : "";
     row.innerHTML = `
-      <td><input type="checkbox" data-id="${rec.id}" /></td>
+      <td><input type="checkbox" data-id="${rec.id}" ${checked} /></td>
       <td>${rec.display}</td>
       <td>${rec.name} ${rec.compressed ? '<span class="badge">zst</span>' : ''}</td>
       <td>${formatBytes(rec.size)}</td>
@@ -103,8 +110,12 @@ function renderGallery(recordings) {
   emptyState.classList.add("hidden");
   for (const rec of recordings) {
     const card = document.createElement("div");
-    card.className = "gallery-card";
+    const checked = state.selected.has(rec.id) ? "checked" : "";
+    card.className = `gallery-card${checked ? " selected" : ""}`;
     card.innerHTML = `
+      <label class="gallery-select">
+        <input type="checkbox" data-id="${rec.id}" ${checked} />
+      </label>
       <div class="preview" data-id="${rec.id}" data-cast="/api/recordings/${rec.id}/cast"></div>
       <div class="gallery-meta">
         <div class="gallery-title">${rec.name} ${rec.compressed ? '<span class="badge">zst</span>' : ''}</div>
@@ -122,7 +133,7 @@ function renderGallery(recordings) {
 }
 
 function initGalleryPlayers() {
-  if (!window.AsciinemaPlayer) {
+  if (typeof createPlayer !== "function") {
     return;
   }
   const previews = galleryView.querySelectorAll(".preview");
@@ -131,7 +142,7 @@ function initGalleryPlayers() {
     if (!castUrl) {
       return;
     }
-    const player = window.AsciinemaPlayer.create(castUrl, preview, {
+    const player = createPlayer(castUrl, preview, {
       fit: "width",
       idleTimeLimit: 2,
     });
@@ -191,6 +202,9 @@ function updateViewMode() {
   galleryView.classList.toggle("hidden", listActive);
   viewListButton.classList.toggle("active", listActive);
   viewGalleryButton.classList.toggle("active", !listActive);
+  if (selectAllGalleryWrap) {
+    selectAllGalleryWrap.classList.toggle("hidden", listActive);
+  }
   if (listActive) {
     disposeGalleryPlayers();
   }
@@ -201,6 +215,7 @@ function applyFilters() {
   if (state.filterDate) {
     records = records.filter((rec) => rec.date === state.filterDate);
   }
+  state.filtered = records;
   if (!records.length) {
     emptyState.classList.remove("hidden");
     renderRecordings([]);
@@ -214,6 +229,7 @@ function applyFilters() {
     renderRecordings(records);
   }
   updateFilterLabel();
+  updateSelectAllCheckbox();
 }
 
 function updateFilterLabel() {
@@ -225,8 +241,30 @@ function updateFilterLabel() {
 }
 
 function selectedIds() {
-  const checked = recordingsBody.querySelectorAll("input[type=checkbox]:checked");
-  return Array.from(checked).map((el) => el.dataset.id);
+  return Array.from(state.selected);
+}
+
+function updateSelectAllCheckbox() {
+  if (!state.filtered.length) {
+    if (selectAll) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+    }
+    if (selectAllGallery) {
+      selectAllGallery.checked = false;
+      selectAllGallery.indeterminate = false;
+    }
+    return;
+  }
+  const selectedCount = state.filtered.filter((rec) => state.selected.has(rec.id)).length;
+  if (selectAll) {
+    selectAll.checked = selectedCount === state.filtered.length;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < state.filtered.length;
+  }
+  if (selectAllGallery) {
+    selectAllGallery.checked = selectedCount === state.filtered.length;
+    selectAllGallery.indeterminate = selectedCount > 0 && selectedCount < state.filtered.length;
+  }
 }
 
 async function loadRecordings() {
@@ -382,10 +420,25 @@ document.getElementById("logoutButton").addEventListener("click", async () => {
 
 selectAll.addEventListener("change", (event) => {
   const checked = event.target.checked;
-  recordingsBody.querySelectorAll("input[type=checkbox]").forEach((box) => {
-    box.checked = checked;
-  });
+  if (checked) {
+    state.filtered.forEach((rec) => state.selected.add(rec.id));
+  } else {
+    state.filtered.forEach((rec) => state.selected.delete(rec.id));
+  }
+  applyFilters();
 });
+
+if (selectAllGallery) {
+  selectAllGallery.addEventListener("change", (event) => {
+    const checked = event.target.checked;
+    if (checked) {
+      state.filtered.forEach((rec) => state.selected.add(rec.id));
+    } else {
+      state.filtered.forEach((rec) => state.selected.delete(rec.id));
+    }
+    applyFilters();
+  });
+}
 
 recordingsBody.addEventListener("click", async (event) => {
   const target = event.target;
@@ -408,6 +461,19 @@ recordingsBody.addEventListener("click", async (event) => {
   }
 });
 
+recordingsBody.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target && target.matches("input[type=checkbox][data-id]")) {
+    const id = target.dataset.id;
+    if (target.checked) {
+      state.selected.add(id);
+    } else {
+      state.selected.delete(id);
+    }
+    updateSelectAllCheckbox();
+  }
+});
+
 galleryView.addEventListener("click", async (event) => {
   const target = event.target;
   if (target.dataset.view) {
@@ -426,6 +492,23 @@ galleryView.addEventListener("click", async (event) => {
     });
     await loadRecordings();
     await loadHeatmap();
+  }
+});
+
+galleryView.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target && target.matches("input[type=checkbox][data-id]")) {
+    const id = target.dataset.id;
+    if (target.checked) {
+      state.selected.add(id);
+    } else {
+      state.selected.delete(id);
+    }
+    const card = target.closest(".gallery-card");
+    if (card) {
+      card.classList.toggle("selected", target.checked);
+    }
+    updateSelectAllCheckbox();
   }
 });
 

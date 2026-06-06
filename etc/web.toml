@@ -1,0 +1,15 @@
+###########################################
+# Configuration for ttyrecall web service #
+###########################################
+
+bind = "127.0.0.1:8450"
+root = "/var/lib/ttyrecall"
+frontend_root = "/usr/share/ttyrecall/web"
+
+# Authentication
+pam_service = "login"
+session_ttl_minutes = 60
+
+# single_user_token = "YOUR_SECRET_LOGIN_TOKEN"
+# single_user_uid = 1000
+# single_user_username = "username"

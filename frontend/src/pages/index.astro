@@ -1,11 +1,14 @@
+---
+import "asciinema-player/dist/bundle/asciinema-player.css";
+import "../styles/app.css";
+---
+
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ttyrecall</title>
-    <link rel="stylesheet" href="/node_modules/asciinema-player/dist/bundle/asciinema-player.css" />
-    <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body>
     <header>
@@ -65,6 +68,10 @@
         <div class="recordings-header">
           <h2>Recordings</h2>
           <div class="view-toggle">
+            <label class="select-all-toggle hidden" id="selectAllGalleryWrap">
+              <input type="checkbox" id="selectAllGallery" />
+              Select All
+            </label>
             <button id="viewList" class="secondary" type="button">List</button>
             <button id="viewGallery" class="secondary" type="button">Gallery</button>
           </div>
@@ -88,7 +95,6 @@
       </div>
     </main>
 
-    <script src="/node_modules/asciinema-player/dist/bundle/asciinema-player.min.js"></script>
-    <script type="module" src="/assets/app.js"></script>
+    <script src="../scripts/app.js"></script>
   </body>
 </html>

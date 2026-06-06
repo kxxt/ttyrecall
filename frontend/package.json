@@ -3,7 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "description": "Web UI for ttyrecall",
+  "scripts": {
+    "dev": "astro dev --host 127.0.0.1",
+    "build": "astro build",
+    "preview": "astro preview --host 127.0.0.1"
+  },
   "dependencies": {
     "asciinema-player": "^3.15"
+  },
+  "devDependencies": {
+    "astro": "^5.0.0"
   }
 }

@@ -36,7 +36,7 @@ pub enum WebMode {
 #[derive(Debug, Deserialize, Default)]
 struct WebConfigFile {
     bind: Option<String>,
-    storage_root: Option<String>,
+    root: Option<String>,
     pam_service: Option<String>,
     session_ttl_minutes: Option<u64>,
     frontend_root: Option<String>,
@@ -48,7 +48,7 @@ struct WebConfigFile {
 #[derive(Debug, Clone)]
 struct WebConfig {
     bind: String,
-    storage_root: PathBuf,
+    root: PathBuf,
     pam_service: String,
     session_ttl: Duration,
     frontend_root: PathBuf,
@@ -188,7 +188,11 @@ impl CastCache {
     }
 }
 
-pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> color_eyre::Result<()> {
+pub async fn run(
+    mode: WebMode,
+    config_path: Option<PathBuf>,
+    open: bool,
+) -> color_eyre::Result<()> {
     let config = load_config(&mode, config_path)?;
     let mut single_user = match &mode {
         WebMode::Service => None,
@@ -233,7 +237,7 @@ pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> col
     };
 
     let state = Arc::new(AppState {
-        storage_root: config.storage_root.clone(),
+        storage_root: config.root.clone(),
         pam_service: config.pam_service.clone(),
         sessions: RwLock::new(HashMap::new()),
         session_ttl: config.session_ttl,
@@ -246,10 +250,9 @@ pub async fn run(mode: WebMode, config_path: Option<PathBuf>, open: bool) -> col
     let app = Router::new()
         .route("/", get(index))
         .route("/view/:id", get(view))
-        .nest_service("/assets", ServeDir::new(config.frontend_root.join("assets")))
         .nest_service(
-            "/node_modules",
-            ServeDir::new(config.frontend_root.join("node_modules")),
+            "/_astro",
+            ServeDir::new(config.frontend_root.join("_astro")),
         )
         .route("/api/login", post(login))
         .route("/api/token-login", post(token_login))
@@ -295,7 +298,7 @@ fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::Result<WebC
 
     Ok(WebConfig {
         bind: file_config.bind.unwrap_or(default_bind),
-        storage_root: PathBuf::from(file_config.storage_root.unwrap_or(default_storage)),
+        root: PathBuf::from(file_config.root.unwrap_or(default_storage)),
         pam_service: file_config.pam_service.unwrap_or(default_pam),
         session_ttl: Duration::from_secs(
             file_config
@@ -324,7 +327,10 @@ fn default_user_config_path() -> PathBuf {
 }
 
 fn default_frontend_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("frontend")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("frontend")
+        .join("dist")
 }
 
 fn display_bind(bind: &str) -> String {
@@ -367,10 +373,11 @@ async fn login(
         Err(_) => return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response(),
     }
 
-    let user = match User::from_name(&payload.username).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR) {
-        Ok(Some(user)) => user,
-        _ => return (StatusCode::UNAUTHORIZED, "Unknown user").into_response(),
-    };
+    let user =
+        match User::from_name(&payload.username).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR) {
+            Ok(Some(user)) => user,
+            _ => return (StatusCode::UNAUTHORIZED, "Unknown user").into_response(),
+        };
 
     create_session(&state, payload.username, user.uid.as_raw()).await
 }
@@ -391,12 +398,7 @@ async fn token_login(
         return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
     }
 
-    create_session(
-        &state,
-        single_user.username.clone(),
-        single_user.uid,
-    )
-    .await
+    create_session(&state, single_user.username.clone(), single_user.uid).await
 }
 
 async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
@@ -435,12 +437,7 @@ async fn create_session(state: &AppState, username: String, uid: u32) -> Respons
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
 
-    (
-        StatusCode::OK,
-        headers,
-        Json(MeResponse { username, uid }),
-    )
-        .into_response()
+    (StatusCode::OK, headers, Json(MeResponse { username, uid })).into_response()
 }
 
 async fn list_recordings(
@@ -550,10 +547,7 @@ async fn cast_recording(
     (StatusCode::OK, headers, bytes).into_response()
 }
 
-async fn heatmap(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn heatmap(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     let session = match require_session(&state, &headers).await {
         Ok(session) => session,
         Err(status) => return (status, "Not authenticated").into_response(),
@@ -681,9 +675,7 @@ fn format_display(rel: &Path) -> Option<String> {
     let day = components[2].as_os_str().to_string_lossy();
     let file = components.last()?.as_os_str().to_string_lossy();
 
-    let base = file
-        .trim_end_matches(".zst")
-        .trim_end_matches(".cast");
+    let base = file.trim_end_matches(".zst").trim_end_matches(".cast");
 
     let time = base.rsplit_once("-pty")?.1;
     let time = time.split('-').nth(1)?;

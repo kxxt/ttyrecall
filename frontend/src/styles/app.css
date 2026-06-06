@@ -248,12 +248,26 @@ th {
 .view-toggle {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 .view-toggle button.active {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+.select-all-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.select-all-toggle input {
+  width: 16px;
+  height: 16px;
 }
 
 .gallery {
@@ -270,6 +284,7 @@ th {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  position: relative;
 }
 
 .preview {
@@ -295,6 +310,30 @@ th {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.gallery-select {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 999px;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.gallery-select input {
+  width: 16px;
+  height: 16px;
+}
+
+.gallery-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .gallery-title {
