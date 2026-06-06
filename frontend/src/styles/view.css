@@ -21,6 +21,29 @@ header {
   border-bottom: 1px solid #1f2937;
 }
 
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.brand img {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.35);
+}
+
+#title {
+  font-size: 15px;
+  color: #94a3b8;
+}
+
 a {
   color: #38bdf8;
   text-decoration: none;
@@ -126,4 +149,19 @@ button.secondary:hover {
 :root[data-theme="light"] button.secondary {
   color: #1f6feb;
   border-color: #1f6feb;
+}
+
+:root[data-theme="light"] #title {
+  color: #667085;
+}
+
+@media (max-width: 640px) {
+  header {
+    flex-wrap: wrap;
+  }
+
+  #title {
+    order: 3;
+    width: 100%;
+  }
 }

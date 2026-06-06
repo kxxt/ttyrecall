@@ -50,6 +50,7 @@ const heatmapFilter = document.getElementById("heatmapFilter");
 const usernameInput = document.getElementById("username");
 const passwordInput = document.getElementById("password");
 const themeToggle = document.getElementById("themeToggle");
+const logoutButton = document.getElementById("logoutButton");
 const listView = document.getElementById("listView");
 const galleryView = document.getElementById("galleryView");
 const viewListButton = document.getElementById("viewList");
@@ -116,6 +117,10 @@ async function api(path, options = {}) {
 function showLogin(message) {
   loginPanel.classList.remove("hidden");
   appPanel.classList.add("hidden");
+  userLabel.textContent = "";
+  if (logoutButton) {
+    logoutButton.classList.add("hidden");
+  }
   if (message) {
     loginError.textContent = message;
   } else {
@@ -126,6 +131,9 @@ function showLogin(message) {
 function showApp() {
   loginPanel.classList.add("hidden");
   appPanel.classList.remove("hidden");
+  if (logoutButton) {
+    logoutButton.classList.remove("hidden");
+  }
 }
 
 function formatBytes(bytes) {
@@ -487,11 +495,13 @@ document.getElementById("deleteButton").addEventListener("click", async () => {
   await loadHeatmap();
 });
 
-document.getElementById("logoutButton").addEventListener("click", async () => {
-  await api("/api/logout", { method: "POST" });
-  state.user = null;
-  showLogin();
-});
+if (logoutButton) {
+  logoutButton.addEventListener("click", async () => {
+    await api("/api/logout", { method: "POST" });
+    state.user = null;
+    showLogin();
+  });
+}
 
 selectAll.addEventListener("change", (event) => {
   const checked = event.target.checked;

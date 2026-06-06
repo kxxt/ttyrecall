@@ -1,3 +1,5 @@
+<img src="./assets/icon.svg" alt="ttyrecall icon" width="120" />
+
 # ttyrecall
 
 Recall, but for terminals.

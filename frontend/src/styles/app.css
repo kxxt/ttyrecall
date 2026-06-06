@@ -41,6 +41,7 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 20px 28px;
   border-bottom: 1px solid var(--border);
   background: #ffffffcc;
@@ -50,15 +51,32 @@ header {
   z-index: 2;
 }
 
-header h1 {
-  margin: 0;
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand img {
+  display: block;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+}
+
+.brand span {
   font-size: 20px;
+  font-weight: 700;
   letter-spacing: 0.6px;
 }
 
 header .user {
   font-size: 14px;
   color: var(--muted);
+  white-space: nowrap;
 }
 
 .header-actions {
@@ -424,6 +442,26 @@ th {
 @media (max-width: 860px) {
   .heatmap {
     grid-template-columns: repeat(27, 12px);
+  }
+
+  header,
+  main {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  header {
+    flex-wrap: wrap;
+  }
+
+  .brand span {
+    font-size: 18px;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 }
 

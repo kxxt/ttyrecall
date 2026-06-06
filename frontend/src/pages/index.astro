@@ -1,6 +1,7 @@
 ---
 import "asciinema-player/dist/bundle/asciinema-player.css";
 import "../styles/app.css";
+import iconUrl from "../../../assets/icon.svg?url";
 ---
 
 <!doctype html>
@@ -9,15 +10,22 @@ import "../styles/app.css";
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ttyrecall</title>
+    <link rel="icon" href={iconUrl} type="image/svg+xml" />
   </head>
   <body>
     <header>
-      <h1>ttyrecall</h1>
+      <a href="/" class="brand" aria-label="ttyrecall home">
+        <img src={iconUrl} alt="" width="36" height="36" />
+        <span>ttyrecall</span>
+      </a>
       <div class="header-actions">
+        <div class="user" id="userLabel"></div>
+        <button id="logoutButton" class="secondary icon-button hidden" type="button" aria-label="Logout" title="Logout">
+          <i data-lucide="log-out" aria-hidden="true"></i>
+        </button>
         <button id="themeToggle" class="secondary icon-button" type="button" aria-label="Theme" title="Theme">
           <i data-lucide="monitor-cog" aria-hidden="true"></i>
         </button>
-        <div class="user" id="userLabel"></div>
       </div>
     </header>
 
@@ -68,9 +76,6 @@ import "../styles/app.css";
             </button>
             <button id="deleteButton" class="secondary icon-button danger" aria-label="Delete selected" title="Delete selected">
               <i data-lucide="trash-2" aria-hidden="true"></i>
-            </button>
-            <button id="logoutButton" class="secondary icon-button" aria-label="Logout" title="Logout">
-              <i data-lucide="log-out" aria-hidden="true"></i>
             </button>
           </div>
         </div>
