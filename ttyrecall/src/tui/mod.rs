@@ -149,7 +149,7 @@ fn action_from_key(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Enter | KeyCode::Char(' ') => Some(KeyAction::ReloadSelected),
         KeyCode::Char('d') | KeyCode::Delete => Some(KeyAction::DeleteSelected),
         KeyCode::Char('r') => Some(KeyAction::Refresh),
-        KeyCode::Char('a') => Some(KeyAction::ClearDateFilter),
+        KeyCode::Char('c') => Some(KeyAction::ClearDateFilter),
         _ => None,
     }
 }
@@ -316,6 +316,14 @@ mod tests {
         assert_eq!(
             action_from_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
             Some(KeyAction::ScrollHeatmapWeeks(-1))
+        );
+    }
+
+    #[test]
+    fn c_clears_heatmap_filter() {
+        assert_eq!(
+            action_from_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+            Some(KeyAction::ClearDateFilter)
         );
     }
 
