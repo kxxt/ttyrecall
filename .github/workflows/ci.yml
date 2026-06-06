@@ -27,8 +27,10 @@ jobs:
       matrix:
         include:
           - backend: libbpf-rs
+            xtask_backend: libbpf
             args: --workspace --all-targets
           - backend: aya-rs
+            xtask_backend: aya
             args: --workspace --all-targets --no-default-features --features ttyrecall/ebpf-aya
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +38,27 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install native dependencies
+      - &install_bpf_native_dependencies
+        name: Install native/eBPF dependencies
+        env:
+          APT_PACKAGES: clang libclang-dev libelf-dev libpam0g-dev linux-tools-azure llvm pkg-config zlib1g-dev
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev libelf-dev pkg-config zlib1g-dev libpam0g-dev
+          sudo apt-get install -y ${APT_PACKAGES}
+      - &prepare_bpftool
+        name: Prepare bpftool
+        run: |
+          if ! command -v bpftool >/dev/null 2>&1; then
+            bpftool_path="$(find /usr/lib/linux-tools -path '*/bpftool' -type f | sort -V | tail -n 1)"
+            test -n "${bpftool_path}"
+            sudo ln -sf "${bpftool_path}" /usr/local/bin/bpftool
+          fi
+          bpftool version
+      - name: Install Aya eBPF linker
+        if: matrix.xtask_backend == 'aya'
+        run: cargo install bpf-linker --locked
+      - name: Build eBPF object
+        run: cargo xtask build-ebpf --backend ${{ matrix.xtask_backend }}
       - name: Run clippy
         run: cargo clippy ${{ matrix.args }} -- -D warnings
 
@@ -73,10 +92,8 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - uses: Swatinem/rust-cache@v2
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y linux-tools-common clang libclang-dev libelf-dev libpam0g-dev llvm pkg-config zlib1g-dev
+      - *install_bpf_native_dependencies
+      - *prepare_bpftool
       - name: Install Aya eBPF linker
         if: matrix.xtask_backend == 'aya'
         run: cargo install bpf-linker --locked
@@ -98,12 +115,16 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev libelf-dev pkg-config zlib1g-dev libpam0g-dev
+      - *install_bpf_native_dependencies
+      - *prepare_bpftool
+      - name: Install Aya eBPF linker
+        run: cargo install bpf-linker --locked
+      - name: Build libbpf-rs eBPF object
+        run: cargo xtask build-ebpf --backend libbpf
       - name: Collect libbpf-rs coverage
         run: cargo llvm-cov --workspace --all-targets --no-report
+      - name: Build aya-rs eBPF object
+        run: cargo xtask build-ebpf --backend aya
       - name: Collect aya-rs coverage
         run: cargo llvm-cov --workspace --all-targets --no-default-features --features ttyrecall/ebpf-aya --no-report
       - name: Generate merged coverage report
