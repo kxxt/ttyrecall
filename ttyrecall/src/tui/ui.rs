@@ -11,7 +11,49 @@ use ratatui::{
 
 use super::app::App;
 
-pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ClickTarget {
+    HeatmapDate(String),
+    RecordingRow(usize),
+}
+
+#[derive(Debug, Default, Clone)]
+pub(super) struct ClickMap {
+    heatmap_dates: Vec<(Rect, String)>,
+    recording_rows: Vec<(Rect, usize)>,
+}
+
+impl ClickMap {
+    pub(super) fn hit_test(&self, x: u16, y: u16) -> Option<ClickTarget> {
+        self.heatmap_dates
+            .iter()
+            .find(|(area, _)| contains(*area, x, y))
+            .map(|(_, date)| ClickTarget::HeatmapDate(date.clone()))
+            .or_else(|| {
+                self.recording_rows
+                    .iter()
+                    .find(|(area, _)| contains(*area, x, y))
+                    .map(|(_, index)| ClickTarget::RecordingRow(*index))
+            })
+    }
+
+    fn clear(&mut self) {
+        self.heatmap_dates.clear();
+        self.recording_rows.clear();
+    }
+
+    fn add_heatmap_date(&mut self, area: Rect, date: NaiveDate) {
+        self.heatmap_dates
+            .push((area, date.format("%Y-%m-%d").to_string()));
+    }
+
+    fn add_recording_row(&mut self, area: Rect, index: usize) {
+        self.recording_rows.push((area, index));
+    }
+}
+
+pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, click_map: &mut ClickMap) {
+    click_map.clear();
     let size = frame.area();
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -35,16 +77,18 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .constraints([Constraint::Length(10), Constraint::Min(1)])
         .split(body[0]);
 
-    draw_heatmap(frame, left[0], app);
-    draw_recordings(frame, left[1], app);
+    draw_heatmap(frame, left[0], app, click_map);
+    draw_recordings(frame, left[1], app, click_map);
     draw_preview(frame, body[1], app);
     draw_status(frame, root[1], app);
 }
 
-fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let block = Block::default()
-        .title(format!(" Activity: {} ", app.username))
-        .borders(Borders::ALL);
+fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &App, click_map: &mut ClickMap) {
+    let title = match app.date_filter.as_deref() {
+        Some(date) => format!(" Activity: {} | filter {date} ", app.username),
+        None => format!(" Activity: {} ", app.username),
+    };
+    let block = Block::default().title(title).borders(Borders::ALL);
     let inner_width = area.width.saturating_sub(2).max(8);
     let weeks = ((inner_width / 2).max(4) as i64).min(26);
     let today = Local::now().date_naive();
@@ -78,6 +122,17 @@ fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &App) {
             let count = counts.get(&date).copied().unwrap_or(0);
             let symbol = if count == 0 { "  " } else { "[]" };
             spans.push(Span::styled(symbol, heat_style(count, max_count)));
+            if date <= today {
+                click_map.add_heatmap_date(
+                    Rect::new(
+                        area.x + 1 + 4 + (week as u16 * 2),
+                        area.y + 2 + weekday as u16,
+                        2,
+                        1,
+                    ),
+                    date,
+                );
+            }
         }
         let label = match weekday {
             0 => "Sun ",
@@ -108,9 +163,13 @@ fn heat_style(count: usize, max_count: usize) -> Style {
     Style::default().fg(color).bg(color)
 }
 
-fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: &mut ClickMap) {
+    let visible_rows = area.height.saturating_sub(2) as usize;
+    app.ensure_selected_visible(visible_rows);
+    let visible_start = app.list_offset;
+    let visible_recordings = app.visible_recordings(visible_rows);
     let items: Vec<ListItem> = app
-        .recordings
+        .visible_recordings(visible_rows)
         .iter()
         .map(|recording| {
             let badge = if recording.compressed { " zst" } else { "" };
@@ -133,16 +192,16 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .collect();
 
     let mut state = ListState::default();
-    if !app.recordings.is_empty() {
-        state.select(Some(app.selected));
+    if !visible_recordings.is_empty() && app.selected >= visible_start {
+        state.select(Some(app.selected - visible_start));
     }
 
+    let title = match app.date_filter.as_deref() {
+        Some(date) => format!(" Recordings ({}) | {date} ", app.recordings.len()),
+        None => format!(" Recordings ({}) ", app.recordings.len()),
+    };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .title(format!(" Recordings ({}) ", app.recordings.len()))
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL))
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
@@ -150,6 +209,18 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
+
+    for row in 0..visible_recordings.len() {
+        click_map.add_recording_row(
+            Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            visible_start + row,
+        );
+    }
 
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -170,7 +241,7 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let controls = " q quit  up/down select  enter reload  r refresh ";
+    let controls = " q quit  up/down select  click filter/select  a all  r refresh ";
     let status = if app.status.is_empty() {
         controls.to_string()
     } else {
@@ -180,6 +251,13 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn contains(area: Rect, x: u16, y: u16) -> bool {
+    x >= area.x
+        && x < area.x.saturating_add(area.width)
+        && y >= area.y
+        && y < area.y.saturating_add(area.height)
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -214,5 +292,21 @@ mod tests {
     fn heat_style_has_empty_and_non_empty_states() {
         assert_eq!(heat_style(0, 10).bg, Some(Color::Rgb(31, 36, 42)));
         assert_eq!(heat_style(10, 10).fg, Some(Color::Rgb(30, 220, 128)));
+    }
+
+    #[test]
+    fn click_map_returns_heatmap_before_list_targets() {
+        let mut map = ClickMap::default();
+        map.add_recording_row(Rect::new(0, 0, 10, 1), 3);
+        map.add_heatmap_date(
+            Rect::new(0, 0, 2, 1),
+            NaiveDate::from_ymd_opt(2026, 6, 6).unwrap(),
+        );
+
+        assert_eq!(
+            map.hit_test(1, 0),
+            Some(ClickTarget::HeatmapDate("2026-06-06".to_string()))
+        );
+        assert_eq!(map.hit_test(5, 0), Some(ClickTarget::RecordingRow(3)));
     }
 }
