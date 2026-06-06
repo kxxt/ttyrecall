@@ -20,15 +20,21 @@
 
 html,
 body {
-  min-height: 100%;
   background-color: var(--bg);
 }
 
+html {
+  min-height: 100%;
+}
+
 body {
+  min-height: 100vh;
   margin: 0;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   color: var(--ink);
-  background: radial-gradient(circle at 20% 20%, #f0f6ff 0%, #f6f7f9 60%) no-repeat;
+  background:
+    radial-gradient(circle at 20% 20%, #f0f6ff 0%, #f6f7f9 60%) no-repeat,
+    var(--bg);
 }
 
 header {
@@ -388,8 +394,9 @@ th {
 }
 
 :root[data-theme="dark"] body {
-  background: radial-gradient(circle at 20% 20%, #0f172a 0%, #0b0f14 60%) no-repeat;
-  background-color: var(--bg);
+  background:
+    radial-gradient(circle at 20% 20%, #0f172a 0%, #0b0f14 60%) no-repeat,
+    var(--bg);
 }
 
 :root[data-theme="dark"] header {
