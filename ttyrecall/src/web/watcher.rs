@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, RwLock as StdRwLock},
 };
 
+use color_eyre::eyre::Context;
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use log::{error, warn};
 
@@ -29,15 +30,15 @@ impl RecordingWatcher {
         })
     }
 
-    fn rebuild(&mut self) -> std::io::Result<()> {
-        self.inotify = Inotify::init()?;
+    fn rebuild(&mut self) -> color_eyre::Result<()> {
+        self.inotify = Inotify::init().with_context(|| "failed to init inotify")?;
         self.watch_paths.clear();
         self.watched_dirs.clear();
         self.index.write().unwrap().clear();
-        self.scan_dir_recursive(self.storage_root.clone())
+        Ok(self.scan_dir_recursive(self.storage_root.clone())?)
     }
 
-    fn run(&mut self) -> std::io::Result<()> {
+    fn run(&mut self) -> color_eyre::Result<()> {
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let events = self.inotify.read_events_blocking(&mut buffer)?;
@@ -48,7 +49,7 @@ impl RecordingWatcher {
         }
     }
 
-    fn handle_event(&mut self, event: inotify::Event<OsString>) -> std::io::Result<()> {
+    fn handle_event(&mut self, event: inotify::Event<OsString>) -> color_eyre::Result<()> {
         if event.mask.contains(EventMask::Q_OVERFLOW) {
             warn!("recording watcher queue overflowed; rebuilding index");
             return self.rebuild();
@@ -87,7 +88,7 @@ impl RecordingWatcher {
         Ok(())
     }
 
-    fn handle_dir_event(&mut self, path: PathBuf, mask: EventMask) -> std::io::Result<()> {
+    fn handle_dir_event(&mut self, path: PathBuf, mask: EventMask) -> color_eyre::Result<()> {
         if mask.intersects(EventMask::MOVED_FROM | EventMask::MOVED_TO) {
             return self.rebuild();
         }
@@ -96,7 +97,7 @@ impl RecordingWatcher {
             return match self.scan_dir_recursive(path) {
                 Ok(()) => Ok(()),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(err),
+                Err(err) => Err(err.into()),
             };
         }
 
