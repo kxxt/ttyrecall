@@ -439,6 +439,17 @@ th {
   text-align: center;
 }
 
+.load-state {
+  padding: 14px 0 4px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.load-sentinel {
+  width: 100%;
+  height: 1px;
+}
+
 @media (max-width: 860px) {
   .heatmap {
     grid-template-columns: repeat(27, 12px);

@@ -6,7 +6,7 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Json,
@@ -22,10 +22,23 @@ use crate::catalog::{
 use super::{session::require_session, state::AppState};
 
 pub(super) const CAST_CACHE_MAX_ENTRIES: usize = 64;
+const DEFAULT_RECORDINGS_LIMIT: usize = 100;
+const MAX_RECORDINGS_LIMIT: usize = 500;
 
 #[derive(Debug, Serialize)]
 struct RecordingsResponse {
     recordings: Vec<RecordingInfo>,
+    offset: usize,
+    limit: usize,
+    total: usize,
+    has_more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct RecordingsQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,14 +60,31 @@ struct HeatmapResponse {
 pub(super) async fn list_recordings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<RecordingsQuery>,
 ) -> impl IntoResponse {
     let session = match require_session(&state, &headers).await {
         Ok(session) => session,
         Err(status) => return (status, "Not authenticated").into_response(),
     };
 
-    let recordings = list_recordings_for_user(&state.recording_index, session.uid);
-    Json(RecordingsResponse { recordings }).into_response()
+    let offset = query.offset.unwrap_or(0);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_RECORDINGS_LIMIT)
+        .clamp(1, MAX_RECORDINGS_LIMIT);
+    let date = query.date.as_deref().filter(|date| !date.is_empty());
+    let (recordings, total) =
+        list_recordings_page_for_user(&state.recording_index, session.uid, date, offset, limit);
+    let has_more = offset.saturating_add(recordings.len()) < total;
+
+    Json(RecordingsResponse {
+        recordings,
+        offset,
+        limit,
+        total,
+        has_more,
+    })
+    .into_response()
 }
 
 pub(super) async fn delete_recordings(
@@ -174,11 +204,17 @@ pub(super) async fn heatmap(
     Json(response).into_response()
 }
 
-pub(super) fn list_recordings_for_user(
+pub(super) fn list_recordings_page_for_user(
     index: &Arc<StdRwLock<RecordingIndex>>,
     uid: u32,
-) -> Vec<RecordingInfo> {
-    index.read().unwrap().list_for_user(uid)
+    date: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<RecordingInfo>, usize) {
+    index
+        .read()
+        .unwrap()
+        .list_for_user_page(uid, date, offset, limit)
 }
 
 fn download_filename(path: &Path) -> String {

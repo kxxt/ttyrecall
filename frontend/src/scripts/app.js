@@ -28,6 +28,8 @@ const iconSet = {
   x: X,
 };
 
+const RECORDINGS_PAGE_SIZE = 100;
+
 const state = {
   user: null,
   recordings: [],
@@ -35,6 +37,10 @@ const state = {
   viewMode: "list",
   selected: new Set(),
   filtered: [],
+  total: 0,
+  hasMore: true,
+  loadingRecordings: false,
+  recordingsRequestId: 0,
 };
 
 const loginPanel = document.getElementById("loginPanel");
@@ -57,8 +63,12 @@ const viewListButton = document.getElementById("viewList");
 const viewGalleryButton = document.getElementById("viewGallery");
 const selectAllGallery = document.getElementById("selectAllGallery");
 const selectAllGalleryWrap = document.getElementById("selectAllGalleryWrap");
+const loadMoreSentinel = document.getElementById("loadMoreSentinel");
+const loadState = document.getElementById("loadState");
 
 const galleryPlayers = new Map();
+let galleryPreviewObserver = null;
+let loadMoreObserver = null;
 
 function renderIcons(root = document) {
   root.querySelectorAll("[data-lucide]").forEach((element) => {
@@ -147,13 +157,10 @@ function formatBytes(bytes) {
   return `${value.toFixed(value < 10 && idx > 0 ? 1 : 0)} ${units[idx]}`;
 }
 
-function renderRecordings(recordings) {
-  recordingsBody.innerHTML = "";
-  if (!recordings.length) {
-    emptyState.classList.remove("hidden");
-    return;
+function renderRecordings(recordings, { append = false } = {}) {
+  if (!append) {
+    recordingsBody.innerHTML = "";
   }
-  emptyState.classList.add("hidden");
   for (const rec of recordings) {
     const row = document.createElement("tr");
     const checked = state.selected.has(rec.id) ? "checked" : "";
@@ -175,14 +182,12 @@ function renderRecordings(recordings) {
   renderIcons(recordingsBody);
 }
 
-function renderGallery(recordings) {
-  disposeGalleryPlayers();
-  galleryView.innerHTML = "";
-  if (!recordings.length) {
-    emptyState.classList.remove("hidden");
-    return;
+function renderGallery(recordings, { append = false } = {}) {
+  if (!append) {
+    disposeGalleryPlayers();
+    galleryView.innerHTML = "";
   }
-  emptyState.classList.add("hidden");
+  const newCards = [];
   for (const rec of recordings) {
     const card = document.createElement("div");
     const checked = state.selected.has(rec.id) ? "checked" : "";
@@ -203,56 +208,83 @@ function renderGallery(recordings) {
       </div>
     `;
     galleryView.appendChild(card);
+    newCards.push(card);
   }
   renderIcons(galleryView);
-  initGalleryPlayers();
+  observeGalleryPreviews(newCards);
 }
 
-function initGalleryPlayers() {
+function createGalleryPlayer(preview) {
   if (typeof createPlayer !== "function") {
     return;
   }
-  const previews = galleryView.querySelectorAll(".preview");
-  previews.forEach((preview) => {
-    const castUrl = preview.dataset.cast;
-    if (!castUrl) {
-      return;
+  const castUrl = preview.dataset.cast;
+  if (!castUrl || galleryPlayers.has(preview)) {
+    return;
+  }
+  const player = createPlayer(castUrl, preview, {
+    fit: "width",
+    idleTimeLimit: 2,
+  });
+  if (player && player.seek) {
+    player.seek("50%");
+  }
+  galleryPlayers.set(preview, player);
+  let leaveTimer = null;
+  preview.addEventListener("pointerenter", () => {
+    if (leaveTimer) {
+      clearTimeout(leaveTimer);
+      leaveTimer = null;
     }
-    const player = createPlayer(castUrl, preview, {
-      fit: "width",
-      idleTimeLimit: 2,
-    });
     if (player && player.seek) {
-      player.seek("50%");
+      player.seek(0);
     }
-    galleryPlayers.set(preview, player);
-    let leaveTimer = null;
-    preview.addEventListener("pointerenter", () => {
-      if (leaveTimer) {
-        clearTimeout(leaveTimer);
-        leaveTimer = null;
+    if (player && player.play) {
+      player.play();
+    }
+  });
+  preview.addEventListener("pointerleave", () => {
+    leaveTimer = window.setTimeout(() => {
+      if (player && player.pause) {
+        player.pause();
       }
       if (player && player.seek) {
-        player.seek(0);
+        player.seek("50%");
       }
-      if (player && player.play) {
-        player.play();
-      }
-    });
-    preview.addEventListener("pointerleave", () => {
-      leaveTimer = window.setTimeout(() => {
-        if (player && player.pause) {
-          player.pause();
-        }
-        if (player && player.seek) {
-          player.seek("50%");
-        }
-      }, 120);
-    });
+    }, 120);
   });
 }
 
+function observeGalleryPreviews(cards) {
+  const previews = cards.flatMap((card) => Array.from(card.querySelectorAll(".preview")));
+  if (!previews.length || state.viewMode !== "gallery") {
+    return;
+  }
+  if (!("IntersectionObserver" in window)) {
+    previews.forEach(createGalleryPlayer);
+    return;
+  }
+  if (!galleryPreviewObserver) {
+    galleryPreviewObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) {
+          return;
+        }
+        createGalleryPlayer(entry.target);
+        galleryPreviewObserver.unobserve(entry.target);
+      });
+    }, {
+      rootMargin: "400px 0px",
+    });
+  }
+  previews.forEach((preview) => galleryPreviewObserver.observe(preview));
+}
+
 function disposeGalleryPlayers() {
+  if (galleryPreviewObserver) {
+    galleryPreviewObserver.disconnect();
+    galleryPreviewObserver = null;
+  }
   for (const [node, player] of galleryPlayers.entries()) {
     if (player && player.dispose) {
       player.dispose();
@@ -268,7 +300,7 @@ function setViewMode(mode) {
   state.viewMode = mode;
   localStorage.setItem("ttyrecall-view", mode);
   updateViewMode();
-  applyFilters();
+  renderLoadedRecordings();
 }
 
 function updateViewMode() {
@@ -286,26 +318,26 @@ function updateViewMode() {
   }
 }
 
-function applyFilters() {
-  let records = state.recordings;
-  if (state.filterDate) {
-    records = records.filter((rec) => rec.date === state.filterDate);
+function renderLoadedRecordings({ records = state.recordings, append = false } = {}) {
+  state.filtered = state.recordings;
+  if (!append) {
+    if (state.viewMode !== "gallery") {
+      disposeGalleryPlayers();
+      galleryView.innerHTML = "";
+    }
+    if (state.viewMode !== "list") {
+      recordingsBody.innerHTML = "";
+    }
   }
-  state.filtered = records;
-  if (!records.length) {
-    emptyState.classList.remove("hidden");
-    renderRecordings([]);
-    renderGallery([]);
-    return;
-  }
-  emptyState.classList.add("hidden");
   if (state.viewMode === "gallery") {
-    renderGallery(records);
+    renderGallery(records, { append });
   } else {
-    renderRecordings(records);
+    renderRecordings(records, { append });
   }
+  emptyState.classList.toggle("hidden", state.loadingRecordings || state.recordings.length > 0);
   updateFilterLabel();
   updateSelectAllCheckbox();
+  updateLoadState();
 }
 
 function updateFilterLabel() {
@@ -350,10 +382,83 @@ function updateSelectAllCheckbox() {
   }
 }
 
-async function loadRecordings() {
-  const data = await api("/api/recordings");
-  state.recordings = data.recordings || [];
-  applyFilters();
+function updateLoadState() {
+  if (!loadState) {
+    return;
+  }
+  if (state.loadingRecordings && !state.recordings.length) {
+    loadState.textContent = "Loading recordings...";
+    loadState.classList.remove("hidden");
+    return;
+  }
+  if (!state.recordings.length) {
+    loadState.textContent = "";
+    loadState.classList.add("hidden");
+    return;
+  }
+  loadState.textContent = `Loaded ${state.recordings.length.toLocaleString()} of ${state.total.toLocaleString()} recordings`;
+  loadState.classList.toggle("hidden", state.total <= RECORDINGS_PAGE_SIZE && !state.hasMore);
+}
+
+async function loadRecordings({ append = false } = {}) {
+  if (state.loadingRecordings || (append && !state.hasMore)) {
+    return;
+  }
+
+  const requestId = state.recordingsRequestId + 1;
+  state.recordingsRequestId = requestId;
+  state.loadingRecordings = true;
+  if (!append) {
+    state.recordings = [];
+    state.filtered = [];
+    state.total = 0;
+    state.hasMore = true;
+    renderLoadedRecordings();
+  } else {
+    updateLoadState();
+  }
+
+  try {
+    const params = new URLSearchParams({
+      offset: append ? String(state.recordings.length) : "0",
+      limit: String(RECORDINGS_PAGE_SIZE),
+    });
+    if (state.filterDate) {
+      params.set("date", state.filterDate);
+    }
+    const data = await api(`/api/recordings?${params.toString()}`);
+    if (requestId !== state.recordingsRequestId) {
+      return;
+    }
+    const recordings = data.recordings || [];
+    state.recordings = append ? state.recordings.concat(recordings) : recordings;
+    state.total = Number.isFinite(data.total) ? data.total : state.recordings.length;
+    state.hasMore = Boolean(data.has_more);
+    renderLoadedRecordings({ records: recordings, append });
+  } finally {
+    if (requestId === state.recordingsRequestId) {
+      state.loadingRecordings = false;
+      emptyState.classList.toggle("hidden", state.recordings.length > 0);
+      updateLoadState();
+    }
+  }
+}
+
+function initLoadMoreObserver() {
+  if (!loadMoreSentinel || !("IntersectionObserver" in window)) {
+    return;
+  }
+  if (loadMoreObserver) {
+    loadMoreObserver.disconnect();
+  }
+  loadMoreObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) {
+      loadRecordings({ append: true });
+    }
+  }, {
+    rootMargin: "700px 0px",
+  });
+  loadMoreObserver.observe(loadMoreSentinel);
 }
 
 function colorForCount(count) {
@@ -491,6 +596,7 @@ document.getElementById("deleteButton").addEventListener("click", async () => {
     method: "POST",
     body: JSON.stringify({ ids }),
   });
+  ids.forEach((id) => state.selected.delete(id));
   await loadRecordings();
   await loadHeatmap();
 });
@@ -510,7 +616,7 @@ selectAll.addEventListener("change", (event) => {
   } else {
     state.filtered.forEach((rec) => state.selected.delete(rec.id));
   }
-  applyFilters();
+  renderLoadedRecordings();
 });
 
 if (selectAllGallery) {
@@ -521,7 +627,7 @@ if (selectAllGallery) {
     } else {
       state.filtered.forEach((rec) => state.selected.delete(rec.id));
     }
-    applyFilters();
+    renderLoadedRecordings();
   });
 }
 
@@ -544,6 +650,7 @@ recordingsBody.addEventListener("click", async (event) => {
       method: "POST",
       body: JSON.stringify({ ids: [target.dataset.delete] }),
     });
+    state.selected.delete(target.dataset.delete);
     await loadRecordings();
     await loadHeatmap();
   }
@@ -581,6 +688,7 @@ galleryView.addEventListener("click", async (event) => {
       method: "POST",
       body: JSON.stringify({ ids: [target.dataset.delete] }),
     });
+    state.selected.delete(target.dataset.delete);
     await loadRecordings();
     await loadHeatmap();
   }
@@ -608,7 +716,7 @@ heatmapFilter.addEventListener("click", async (event) => {
   if (target && target.id === "clearHeatmapFilter") {
     state.filterDate = null;
     await loadHeatmap();
-    applyFilters();
+    await loadRecordings();
   }
 });
 
@@ -623,7 +731,7 @@ document.getElementById("heatmap").addEventListener("click", async (event) => {
   }
   state.filterDate = state.filterDate === date ? null : date;
   await loadHeatmap();
-  applyFilters();
+  await loadRecordings();
 });
 
 async function tryTokenLogin() {
@@ -651,6 +759,7 @@ async function bootstrap() {
   const storedView = localStorage.getItem("ttyrecall-view") || "list";
   state.viewMode = storedView === "gallery" ? "gallery" : "list";
   updateViewMode();
+  initLoadMoreObserver();
   viewListButton.addEventListener("click", () => setViewMode("list"));
   viewGalleryButton.addEventListener("click", () => setViewMode("gallery"));
   await tryTokenLogin();

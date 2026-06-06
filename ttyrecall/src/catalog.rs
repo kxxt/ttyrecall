@@ -78,6 +78,33 @@ impl RecordingIndex {
         recordings
     }
 
+    pub(crate) fn list_for_user_page(
+        &self,
+        uid: u32,
+        date: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> (Vec<RecordingInfo>, usize) {
+        let Some(recordings) = self.by_user.get(&uid) else {
+            return (Vec::new(), 0);
+        };
+
+        let mut recordings: Vec<_> = recordings
+            .values()
+            .filter(|recording| date.map_or(true, |date| recording.date == date))
+            .collect();
+        recordings.sort_by(|a, b| b.display.cmp(&a.display));
+
+        let total = recordings.len();
+        let page = recordings
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect();
+        (page, total)
+    }
+
     pub(crate) fn heatmap_for_user(&self, uid: u32) -> Vec<HeatmapDay> {
         let Some(recordings) = self.by_user.get(&uid) else {
             return Vec::new();
@@ -298,6 +325,33 @@ mod tests {
 
         let recordings = index.list_for_user(1000);
         assert_eq!(recordings.len(), 1);
+        assert_eq!(recordings[0].display, "2026-06-06 10:30");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_for_user_page_filters_and_slices() {
+        let root = temp_root("page");
+        let first = root.join("1000/2026/06/04/fish-pty1-08:00.cast");
+        let second = root.join("1000/2026/06/05/zsh-pty1-09:15.cast");
+        let third = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
+        write_file(&first, "{}");
+        write_file(&second, "{}");
+        write_file(&third, "{}");
+
+        let mut index = RecordingIndex::default();
+        index.upsert_path(&root, &first);
+        index.upsert_path(&root, &second);
+        index.upsert_path(&root, &third);
+
+        let (recordings, total) = index.list_for_user_page(1000, None, 1, 1);
+        assert_eq!(total, 3);
+        assert_eq!(recordings.len(), 1);
+        assert_eq!(recordings[0].display, "2026-06-05 09:15");
+
+        let (recordings, total) = index.list_for_user_page(1000, Some("2026-06-06"), 0, 10);
+        assert_eq!(total, 1);
         assert_eq!(recordings[0].display, "2026-06-06 10:30");
 
         let _ = std::fs::remove_dir_all(root);
