@@ -8,6 +8,9 @@ use crate::catalog::{self, HeatmapDay, RecordingIndex, RecordingInfo};
 
 use super::{playback::Playback, REFRESH_INTERVAL};
 
+pub(super) const HEATMAP_TOTAL_WEEKS: usize = 26;
+pub(super) const HEATMAP_TOTAL_ROWS: usize = 8;
+
 pub(super) struct App {
     storage_root: PathBuf,
     uid: u32,
@@ -18,6 +21,10 @@ pub(super) struct App {
     pub(super) heatmap: Vec<HeatmapDay>,
     pub(super) selected: usize,
     pub(super) list_offset: usize,
+    pub(super) main_split_percent: u16,
+    pub(super) heatmap_rows: u16,
+    pub(super) heatmap_week_scroll: usize,
+    pub(super) heatmap_row_offset: usize,
     pub(super) date_filter: Option<String>,
     selected_id: Option<String>,
     pub(super) last_refresh: Instant,
@@ -42,6 +49,10 @@ impl App {
             heatmap: Vec::new(),
             selected: 0,
             list_offset: 0,
+            main_split_percent: 42,
+            heatmap_rows: 10,
+            heatmap_week_scroll: 0,
+            heatmap_row_offset: 0,
             date_filter: None,
             selected_id: None,
             last_refresh: Instant::now() - REFRESH_INTERVAL,
@@ -123,6 +134,47 @@ impl App {
     pub(super) fn reload_selected(&mut self) {
         self.selected_id = None;
         self.load_selected_if_needed();
+    }
+
+    pub(super) fn resize_main_split(&mut self, delta: i16) {
+        self.main_split_percent = add_clamped(self.main_split_percent, delta, 20, 80);
+    }
+
+    pub(super) fn set_main_split_percent(&mut self, percent: u16) {
+        self.main_split_percent = percent.clamp(20, 80);
+    }
+
+    pub(super) fn resize_heatmap_rows(&mut self, delta: i16) {
+        self.heatmap_rows = add_clamped(self.heatmap_rows, delta, 3, 30);
+    }
+
+    pub(super) fn set_heatmap_rows(&mut self, rows: u16) {
+        self.heatmap_rows = rows.clamp(3, 30);
+    }
+
+    pub(super) fn scroll_heatmap_weeks(&mut self, delta: i16) {
+        self.heatmap_week_scroll = add_clamped_usize(
+            self.heatmap_week_scroll,
+            delta,
+            0,
+            HEATMAP_TOTAL_WEEKS.saturating_sub(1),
+        );
+    }
+
+    pub(super) fn scroll_heatmap_rows(&mut self, delta: i16) {
+        self.heatmap_row_offset = add_clamped_usize(
+            self.heatmap_row_offset,
+            delta,
+            0,
+            HEATMAP_TOTAL_ROWS.saturating_sub(1),
+        );
+    }
+
+    pub(super) fn clamp_heatmap_scroll(&mut self, visible_rows: usize, visible_weeks: usize) {
+        let max_week_scroll = HEATMAP_TOTAL_WEEKS.saturating_sub(visible_weeks.max(1));
+        let max_row_offset = HEATMAP_TOTAL_ROWS.saturating_sub(visible_rows.max(1));
+        self.heatmap_week_scroll = self.heatmap_week_scroll.min(max_week_scroll);
+        self.heatmap_row_offset = self.heatmap_row_offset.min(max_row_offset);
     }
 
     pub(super) fn ensure_selected_visible(&mut self, visible_rows: usize) {
@@ -207,6 +259,19 @@ impl App {
     }
 }
 
+fn add_clamped(value: u16, delta: i16, min: u16, max: u16) -> u16 {
+    let value = value as i16 + delta;
+    value.clamp(min as i16, max as i16) as u16
+}
+
+fn add_clamped_usize(value: usize, delta: i16, min: usize, max: usize) -> usize {
+    if delta < 0 {
+        value.saturating_sub(delta.unsigned_abs() as usize).max(min)
+    } else {
+        value.saturating_add(delta as usize).min(max)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +340,28 @@ mod tests {
 
         assert_eq!(app.list_offset, 1);
         assert_eq!(app.visible_recordings(2)[0].id, "second");
+    }
+
+    #[test]
+    fn resizing_clamps_layout_state() {
+        let mut app = app_with_recordings(Vec::new());
+
+        app.resize_main_split(-100);
+        app.resize_heatmap_rows(100);
+
+        assert_eq!(app.main_split_percent, 20);
+        assert_eq!(app.heatmap_rows, 30);
+    }
+
+    #[test]
+    fn heatmap_scroll_clamps_to_visible_window() {
+        let mut app = app_with_recordings(Vec::new());
+
+        app.scroll_heatmap_weeks(100);
+        app.scroll_heatmap_rows(100);
+        app.clamp_heatmap_scroll(4, 10);
+
+        assert_eq!(app.heatmap_week_scroll, HEATMAP_TOTAL_WEEKS - 10);
+        assert_eq!(app.heatmap_row_offset, HEATMAP_TOTAL_ROWS - 4);
     }
 }

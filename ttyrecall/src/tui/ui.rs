@@ -9,26 +9,50 @@ use ratatui::{
     Frame,
 };
 
-use super::app::App;
+use super::app::{App, HEATMAP_TOTAL_ROWS, HEATMAP_TOTAL_WEEKS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClickTarget {
     HeatmapDate(String),
     RecordingRow(usize),
+    Resize(ResizeTarget),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResizeTarget {
+    MainSplit,
+    HeatmapSplit,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ResizeGeometry {
+    pub(super) target: ResizeTarget,
+    pub(super) area: Rect,
+    pub(super) direction: Direction,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct ClickMap {
     heatmap_dates: Vec<(Rect, String)>,
     recording_rows: Vec<(Rect, usize)>,
+    resize_targets: Vec<(Rect, ResizeTarget)>,
+    heatmap_area: Option<Rect>,
+    main_geometry: Option<ResizeGeometry>,
+    heatmap_geometry: Option<ResizeGeometry>,
 }
 
 impl ClickMap {
     pub(super) fn hit_test(&self, x: u16, y: u16) -> Option<ClickTarget> {
-        self.heatmap_dates
+        self.resize_targets
             .iter()
             .find(|(area, _)| contains(*area, x, y))
-            .map(|(_, date)| ClickTarget::HeatmapDate(date.clone()))
+            .map(|(_, target)| ClickTarget::Resize(*target))
+            .or_else(|| {
+                self.heatmap_dates
+                    .iter()
+                    .find(|(area, _)| contains(*area, x, y))
+                    .map(|(_, date)| ClickTarget::HeatmapDate(date.clone()))
+            })
             .or_else(|| {
                 self.recording_rows
                     .iter()
@@ -37,9 +61,26 @@ impl ClickMap {
             })
     }
 
+    pub(super) fn resize_geometry(&self, target: ResizeTarget) -> Option<ResizeGeometry> {
+        match target {
+            ResizeTarget::MainSplit => self.main_geometry,
+            ResizeTarget::HeatmapSplit => self.heatmap_geometry,
+        }
+    }
+
+    pub(super) fn is_heatmap(&self, x: u16, y: u16) -> bool {
+        self.heatmap_area
+            .map(|area| contains(area, x, y))
+            .unwrap_or(false)
+    }
+
     fn clear(&mut self) {
         self.heatmap_dates.clear();
         self.recording_rows.clear();
+        self.resize_targets.clear();
+        self.heatmap_area = None;
+        self.main_geometry = None;
+        self.heatmap_geometry = None;
     }
 
     fn add_heatmap_date(&mut self, area: Rect, date: NaiveDate) {
@@ -49,6 +90,21 @@ impl ClickMap {
 
     fn add_recording_row(&mut self, area: Rect, index: usize) {
         self.recording_rows.push((area, index));
+    }
+
+    fn set_heatmap_area(&mut self, area: Rect) {
+        self.heatmap_area = Some(area);
+    }
+
+    fn add_resize_target(&mut self, area: Rect, target: ResizeTarget) {
+        self.resize_targets.push((area, target));
+    }
+
+    fn set_resize_geometry(&mut self, geometry: ResizeGeometry) {
+        match geometry.target {
+            ResizeTarget::MainSplit => self.main_geometry = Some(geometry),
+            ResizeTarget::HeatmapSplit => self.heatmap_geometry = Some(geometry),
+        }
     }
 }
 
@@ -60,22 +116,40 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, click_map: &mut ClickMa
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(size);
 
-    let body = if size.width < 100 {
+    let main_direction = if size.width < 100 {
+        Direction::Vertical
+    } else {
+        Direction::Horizontal
+    };
+    let body = if main_direction == Direction::Vertical {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .constraints([
+                Constraint::Percentage(app.main_split_percent),
+                Constraint::Percentage(100 - app.main_split_percent),
+            ])
             .split(root[0])
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .constraints([
+                Constraint::Percentage(app.main_split_percent),
+                Constraint::Percentage(100 - app.main_split_percent),
+            ])
             .split(root[0])
     };
 
+    register_main_split(root[0], body[0], main_direction, click_map);
+
+    let heatmap_rows = app
+        .heatmap_rows
+        .min(body[0].height.saturating_sub(3).max(1));
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(1)])
+        .constraints([Constraint::Length(heatmap_rows), Constraint::Min(1)])
         .split(body[0]);
+
+    register_heatmap_split(body[0], left[0], click_map);
 
     draw_heatmap(frame, left[0], app, click_map);
     draw_recordings(frame, left[1], app, click_map);
@@ -83,17 +157,27 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, click_map: &mut ClickMa
     draw_status(frame, root[1], app);
 }
 
-fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &App, click_map: &mut ClickMap) {
+fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: &mut ClickMap) {
+    click_map.set_heatmap_area(area);
     let title = match app.date_filter.as_deref() {
         Some(date) => format!(" Activity: {} | filter {date} ", app.username),
         None => format!(" Activity: {} ", app.username),
     };
     let block = Block::default().title(title).borders(Borders::ALL);
-    let inner_width = area.width.saturating_sub(2).max(8);
-    let weeks = ((inner_width / 2).max(4) as i64).min(26);
+    let inner_width = area.width.saturating_sub(2);
+    let visible_lines = area.height.saturating_sub(2) as usize;
+    let visible_weeks = visible_heatmap_weeks(inner_width);
+    app.clamp_heatmap_scroll(visible_lines, visible_weeks);
     let today = Local::now().date_naive();
     let first = today
-        - chrono::Duration::days(today.weekday().num_days_from_sunday() as i64 + (weeks - 1) * 7);
+        - chrono::Duration::days(
+            today.weekday().num_days_from_sunday() as i64 + (HEATMAP_TOTAL_WEEKS as i64 - 1) * 7,
+        );
+    let max_week_scroll = HEATMAP_TOTAL_WEEKS.saturating_sub(visible_weeks.max(1));
+    let start_week = max_week_scroll.saturating_sub(app.heatmap_week_scroll);
+    let end_week = (start_week + visible_weeks).min(HEATMAP_TOTAL_WEEKS);
+    let start_line = app.heatmap_row_offset;
+    let end_line = (start_line + visible_lines).min(HEATMAP_TOTAL_ROWS);
     let counts: HashMap<_, _> = app
         .heatmap
         .iter()
@@ -106,32 +190,34 @@ fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &App, click_map: &mut Cl
     let max_count = counts.values().copied().max().unwrap_or(1);
 
     let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{} to {}",
-            first.format("%Y-%m-%d"),
-            today.format("%Y-%m-%d")
-        ),
-        Style::default().fg(Color::DarkGray),
-    )));
 
-    for weekday in 0..7 {
+    for line_index in start_line..end_line {
+        if line_index == 0 {
+            let first_visible = first + chrono::Duration::days((start_week * 7) as i64);
+            let last_visible =
+                first + chrono::Duration::days((end_week * 7).saturating_sub(1) as i64);
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} to {}",
+                    first_visible.format("%Y-%m-%d"),
+                    last_visible.min(today).format("%Y-%m-%d")
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+            continue;
+        }
+
+        let weekday = line_index - 1;
         let mut spans = Vec::new();
-        for week in 0..weeks {
-            let date = first + chrono::Duration::days(week * 7 + weekday);
+        for week in start_week..end_week {
+            let date = first + chrono::Duration::days((week * 7 + weekday) as i64);
             let count = counts.get(&date).copied().unwrap_or(0);
             let symbol = if count == 0 { "  " } else { "[]" };
             spans.push(Span::styled(symbol, heat_style(count, max_count)));
             if date <= today {
-                click_map.add_heatmap_date(
-                    Rect::new(
-                        area.x + 1 + 4 + (week as u16 * 2),
-                        area.y + 2 + weekday as u16,
-                        2,
-                        1,
-                    ),
-                    date,
-                );
+                let screen_row = area.y + 1 + (line_index - start_line) as u16;
+                let screen_col = area.x + 1 + 4 + ((week - start_week) as u16 * 2);
+                click_map.add_heatmap_date(Rect::new(screen_col, screen_row, 2, 1), date);
             }
         }
         let label = match weekday {
@@ -241,7 +327,8 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let controls = " q quit  up/down select  click filter/select  a all  r refresh ";
+    let controls =
+        " q quit  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll ";
     let status = if app.status.is_empty() {
         controls.to_string()
     } else {
@@ -251,6 +338,62 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn register_main_split(
+    body_area: Rect,
+    first_pane: Rect,
+    direction: Direction,
+    click_map: &mut ClickMap,
+) {
+    click_map.set_resize_geometry(ResizeGeometry {
+        target: ResizeTarget::MainSplit,
+        area: body_area,
+        direction,
+    });
+    let divider = match direction {
+        Direction::Horizontal => Rect::new(
+            first_pane
+                .x
+                .saturating_add(first_pane.width)
+                .saturating_sub(1),
+            body_area.y,
+            1,
+            body_area.height,
+        ),
+        Direction::Vertical => Rect::new(
+            body_area.x,
+            first_pane
+                .y
+                .saturating_add(first_pane.height)
+                .saturating_sub(1),
+            body_area.width,
+            1,
+        ),
+    };
+    click_map.add_resize_target(divider, ResizeTarget::MainSplit);
+}
+
+fn register_heatmap_split(left_area: Rect, heatmap_area: Rect, click_map: &mut ClickMap) {
+    click_map.set_resize_geometry(ResizeGeometry {
+        target: ResizeTarget::HeatmapSplit,
+        area: left_area,
+        direction: Direction::Vertical,
+    });
+    let divider = Rect::new(
+        left_area.x,
+        heatmap_area
+            .y
+            .saturating_add(heatmap_area.height)
+            .saturating_sub(1),
+        left_area.width,
+        1,
+    );
+    click_map.add_resize_target(divider, ResizeTarget::HeatmapSplit);
+}
+
+fn visible_heatmap_weeks(inner_width: u16) -> usize {
+    inner_width.saturating_sub(4) as usize / 2
 }
 
 fn contains(area: Rect, x: u16, y: u16) -> bool {
@@ -308,5 +451,26 @@ mod tests {
             Some(ClickTarget::HeatmapDate("2026-06-06".to_string()))
         );
         assert_eq!(map.hit_test(5, 0), Some(ClickTarget::RecordingRow(3)));
+    }
+
+    #[test]
+    fn click_map_prioritizes_resize_targets() {
+        let mut map = ClickMap::default();
+        map.add_heatmap_date(
+            Rect::new(0, 0, 2, 1),
+            NaiveDate::from_ymd_opt(2026, 6, 6).unwrap(),
+        );
+        map.add_resize_target(Rect::new(0, 0, 1, 1), ResizeTarget::MainSplit);
+
+        assert_eq!(
+            map.hit_test(0, 0),
+            Some(ClickTarget::Resize(ResizeTarget::MainSplit))
+        );
+    }
+
+    #[test]
+    fn visible_heatmap_weeks_respects_label_width() {
+        assert_eq!(visible_heatmap_weeks(4), 0);
+        assert_eq!(visible_heatmap_weeks(10), 3);
     }
 }
