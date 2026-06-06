@@ -82,13 +82,22 @@ fn run_loop(
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    if let Some(action) = action_from_key(key) {
+                    let action = if app.has_pending_delete_confirmation() {
+                        delete_confirmation_action_from_key(key)
+                    } else {
+                        action_from_key(key)
+                    };
+                    if let Some(action) = action {
                         if !apply_key_action(action, app) {
                             break;
                         }
                     }
                 }
-                CrosstermEvent::Mouse(mouse) => handle_mouse(mouse, app, &click_map, &mut dragging),
+                CrosstermEvent::Mouse(mouse) => {
+                    if !app.has_pending_delete_confirmation() {
+                        handle_mouse(mouse, app, &click_map, &mut dragging);
+                    }
+                }
                 _ => {}
             }
         }
@@ -104,6 +113,10 @@ enum KeyAction {
     SelectFirst,
     SelectLast,
     ReloadSelected,
+    DeleteSelected,
+    ConfirmDelete,
+    CancelDelete,
+    ToggleDeleteDontAskAgain,
     Refresh,
     ClearDateFilter,
     ResizeMainSplit(i16),
@@ -134,8 +147,18 @@ fn action_from_key(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Home => Some(KeyAction::SelectFirst),
         KeyCode::End => Some(KeyAction::SelectLast),
         KeyCode::Enter | KeyCode::Char(' ') => Some(KeyAction::ReloadSelected),
+        KeyCode::Char('d') | KeyCode::Delete => Some(KeyAction::DeleteSelected),
         KeyCode::Char('r') => Some(KeyAction::Refresh),
         KeyCode::Char('a') => Some(KeyAction::ClearDateFilter),
+        _ => None,
+    }
+}
+
+fn delete_confirmation_action_from_key(key: KeyEvent) -> Option<KeyAction> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Some(KeyAction::ConfirmDelete),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(KeyAction::CancelDelete),
+        KeyCode::Char(' ') => Some(KeyAction::ToggleDeleteDontAskAgain),
         _ => None,
     }
 }
@@ -148,6 +171,10 @@ fn apply_key_action(action: KeyAction, app: &mut App) -> bool {
         KeyAction::SelectFirst => app.select_first(),
         KeyAction::SelectLast => app.select_last(),
         KeyAction::ReloadSelected => app.reload_selected(),
+        KeyAction::DeleteSelected => app.request_delete_selected(),
+        KeyAction::ConfirmDelete => app.confirm_delete(),
+        KeyAction::CancelDelete => app.cancel_delete(),
+        KeyAction::ToggleDeleteDontAskAgain => app.toggle_delete_dont_ask_again(),
         KeyAction::Refresh => app.refresh(),
         KeyAction::ClearDateFilter => app.clear_date_filter(),
         KeyAction::ResizeMainSplit(delta) => app.resize_main_split(delta),
@@ -309,6 +336,33 @@ mod tests {
         assert_eq!(
             action_from_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT)),
             None
+        );
+    }
+
+    #[test]
+    fn delete_keys_open_and_drive_confirmation() {
+        assert_eq!(
+            action_from_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
+            Some(KeyAction::DeleteSelected)
+        );
+        assert_eq!(
+            action_from_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
+            Some(KeyAction::DeleteSelected)
+        );
+        assert_eq!(
+            delete_confirmation_action_from_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(KeyAction::ConfirmDelete)
+        );
+        assert_eq!(
+            delete_confirmation_action_from_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(KeyAction::CancelDelete)
+        );
+        assert_eq!(
+            delete_confirmation_action_from_key(KeyEvent::new(
+                KeyCode::Char(' '),
+                KeyModifiers::NONE
+            )),
+            Some(KeyAction::ToggleDeleteDontAskAgain)
         );
     }
 }

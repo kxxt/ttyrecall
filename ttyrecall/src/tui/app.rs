@@ -30,6 +30,14 @@ pub(super) struct App {
     pub(super) last_refresh: Instant,
     pub(super) playback: Playback,
     pub(super) status: String,
+    pub(super) delete_confirmation: Option<DeleteConfirmation>,
+    confirm_deletes: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DeleteConfirmation {
+    pub(super) recording: RecordingInfo,
+    pub(super) dont_ask_again: bool,
 }
 
 impl App {
@@ -58,6 +66,8 @@ impl App {
             last_refresh: Instant::now() - REFRESH_INTERVAL,
             playback: Playback::empty(),
             status: String::new(),
+            delete_confirmation: None,
+            confirm_deletes: true,
         }
     }
 
@@ -134,6 +144,48 @@ impl App {
     pub(super) fn reload_selected(&mut self) {
         self.selected_id = None;
         self.load_selected_if_needed();
+    }
+
+    pub(super) fn request_delete_selected(&mut self) {
+        let Some(recording) = self.selected_recording().cloned() else {
+            self.status = "No recording selected".to_string();
+            return;
+        };
+
+        if self.confirm_deletes {
+            self.delete_confirmation = Some(DeleteConfirmation {
+                recording,
+                dont_ask_again: false,
+            });
+        } else {
+            self.delete_recording(recording);
+        }
+    }
+
+    pub(super) fn confirm_delete(&mut self) {
+        let Some(confirmation) = self.delete_confirmation.take() else {
+            return;
+        };
+        if confirmation.dont_ask_again {
+            self.confirm_deletes = false;
+        }
+        self.delete_recording(confirmation.recording);
+    }
+
+    pub(super) fn cancel_delete(&mut self) {
+        if let Some(confirmation) = self.delete_confirmation.take() {
+            self.status = format!("Kept {}", confirmation.recording.name);
+        }
+    }
+
+    pub(super) fn toggle_delete_dont_ask_again(&mut self) {
+        if let Some(confirmation) = &mut self.delete_confirmation {
+            confirmation.dont_ask_again = !confirmation.dont_ask_again;
+        }
+    }
+
+    pub(super) fn has_pending_delete_confirmation(&self) -> bool {
+        self.delete_confirmation.is_some()
     }
 
     pub(super) fn resize_main_split(&mut self, delta: i16) {
@@ -257,6 +309,39 @@ impl App {
             }
         }
     }
+
+    fn delete_recording(&mut self, recording: RecordingInfo) {
+        let Some(path) =
+            catalog::resolve_recording_path(&self.storage_root, self.uid, &recording.id)
+        else {
+            self.status = format!("Missing {}", recording.name);
+            self.refresh_after_delete();
+            return;
+        };
+
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                self.recording_index
+                    .write()
+                    .unwrap()
+                    .remove_path(&self.storage_root, &path);
+                self.status = format!("Deleted {}", recording.name);
+            }
+            Err(err) => {
+                self.status = format!("Failed to delete {}: {err}", recording.name);
+            }
+        }
+        self.refresh_after_delete();
+    }
+
+    fn refresh_after_delete(&mut self) {
+        let previous_status = self.status.clone();
+        self.selected_id = None;
+        self.refresh();
+        if !previous_status.is_empty() {
+            self.status = previous_status;
+        }
+    }
 }
 
 fn add_clamped(value: u16, delta: i16, min: u16, max: u16) -> u16 {
@@ -297,6 +382,18 @@ mod tests {
         app.all_recordings = recordings;
         app.apply_filter();
         app
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ttyrecall-tui-app-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    fn write_file(path: &std::path::Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
     }
 
     #[test]
@@ -363,5 +460,69 @@ mod tests {
 
         assert_eq!(app.heatmap_week_scroll, HEATMAP_TOTAL_WEEKS - 10);
         assert_eq!(app.heatmap_row_offset, HEATMAP_TOTAL_ROWS - 4);
+    }
+
+    #[test]
+    fn delete_selected_waits_for_confirmation_then_removes_file() {
+        let root = temp_root("delete-confirmed");
+        let recording = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
+        write_file(
+            &recording,
+            r#"{"version":2,"width":80,"height":24}
+[0.0,"o","hello"]
+"#,
+        );
+        let mut index = RecordingIndex::default();
+        index.upsert_path(&root, &recording);
+        let index = Arc::new(StdRwLock::new(index));
+        let mut app = App::new(root.clone(), 1000, "user".to_string(), index.clone());
+        app.refresh();
+
+        app.request_delete_selected();
+
+        assert!(recording.exists());
+        assert!(app.has_pending_delete_confirmation());
+
+        app.confirm_delete();
+
+        assert!(!recording.exists());
+        assert!(app.recordings.is_empty());
+        assert!(index.read().unwrap().list_for_user(1000).is_empty());
+        assert!(app.status.contains("Deleted"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_dont_ask_again_deletes_future_selection_immediately() {
+        let root = temp_root("delete-skip-confirmation");
+        let first = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
+        let second = root.join("1000/2026/06/05/zsh-pty1-09:15.cast");
+        write_file(&first, r#"{"version":2}"#);
+        write_file(&second, r#"{"version":2}"#);
+        let mut index = RecordingIndex::default();
+        index.upsert_path(&root, &first);
+        index.upsert_path(&root, &second);
+        let mut app = App::new(
+            root.clone(),
+            1000,
+            "user".to_string(),
+            Arc::new(StdRwLock::new(index)),
+        );
+        app.refresh();
+
+        app.request_delete_selected();
+        app.toggle_delete_dont_ask_again();
+        app.confirm_delete();
+
+        assert!(!first.exists());
+        assert!(second.exists());
+
+        app.request_delete_selected();
+
+        assert!(!second.exists());
+        assert!(!app.has_pending_delete_confirmation());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

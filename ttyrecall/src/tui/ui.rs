@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use chrono::{Datelike, Local, NaiveDate};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -155,6 +155,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, click_map: &mut ClickMa
     draw_recordings(frame, left[1], app, click_map);
     draw_preview(frame, body[1], app);
     draw_status(frame, root[1], app);
+    draw_delete_confirmation(frame, size, app);
 }
 
 fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: &mut ClickMap) {
@@ -425,7 +426,7 @@ fn preview_color(color: vt100::Color) -> Option<Color> {
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let controls =
-        " q quit  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll ";
+        " q quit  d delete  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll ";
     let status = if app.status.is_empty() {
         controls.to_string()
     } else {
@@ -435,6 +436,64 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn draw_delete_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(confirmation) = &app.delete_confirmation else {
+        return;
+    };
+
+    let popup = centered_rect(62, 9, area);
+    let checkbox = if confirmation.dont_ask_again {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    let text = Text::from(vec![
+        Line::from("Delete this recording?"),
+        Line::from(Span::styled(
+            confirmation.recording.name.clone(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("{}  Don't ask again", checkbox),
+            Style::default().fg(Color::Rgb(216, 199, 155)),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Enter/Y", Style::default().fg(Color::LightRed)),
+            Span::raw(" delete  "),
+            Span::styled("N/Esc", Style::default().fg(Color::DarkGray)),
+            Span::raw(" cancel  "),
+            Span::styled("Space", Style::default().fg(Color::DarkGray)),
+            Span::raw(" toggle"),
+        ]),
+    ]);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title(" Confirm Delete ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::LightRed)),
+        )
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::Rgb(211, 216, 217)));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(paragraph, popup);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
 }
 
 fn register_main_split(
