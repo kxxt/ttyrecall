@@ -91,7 +91,10 @@ impl RecordingIndex {
 
         let mut recordings: Vec<_> = recordings
             .values()
-            .filter(|recording| date.map_or(true, |date| recording.date == date))
+            .filter(|recording| match date {
+                Some(date) => recording.date == date,
+                None => true,
+            })
             .collect();
         recordings.sort_by(|a, b| b.display.cmp(&a.display));
 

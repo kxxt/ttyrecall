@@ -36,7 +36,7 @@ use ttyrecall_common::{
 use vmlinux::{tty_driver, tty_struct, winsize};
 
 // assuming we have 128 cores, each core is writing 2048 byte to a different pty, that
-// will cause 2048 * 128 bytes to be accumlated on our buffer.
+// will cause 2048 * 128 bytes to be accumulated on our buffer.
 // Let's reserve 512 times it for now. It should be enough.
 #[map]
 static EVENT_RING: RingBuf = RingBuf::with_byte_size(

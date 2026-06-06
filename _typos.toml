@@ -1,0 +1,18 @@
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "frontend/package-lock.json",
+    "ttyrecall-ebpf/Cargo.lock",
+    "ttyrecall-ebpf/src/generated_vmlinux.rs",
+    "trace",
+]
+
+[default.extend-words]
+asciicast = "asciicast"
+asciinema = "asciinema"
+CO = "CO"
+CO-RE = "CO-RE"
+libbpf = "libbpf"
+ratatui = "ratatui"
+vmlinux = "vmlinux"
+zstd = "zstd"

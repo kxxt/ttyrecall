@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@v1
+
+  clippy:
+    name: Clippy (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: libbpf-rs
+            args: --workspace --all-targets
+          - backend: aya-rs
+            args: --workspace --all-targets --no-default-features --features ttyrecall/ebpf-aya
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev libelf-dev pkg-config zlib1g-dev
+      - name: Run clippy
+        run: cargo clippy ${{ matrix.args }} -- -D warnings
+
+  cargo-deny:
+    name: cargo-deny (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: libbpf-rs
+            arguments: --workspace
+          - backend: aya-rs
+            arguments: --workspace --no-default-features --features ttyrecall/ebpf-aya
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check
+          arguments: ${{ matrix.arguments }}
+
+  build:
+    name: Build (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: libbpf-rs
+            xtask_backend: libbpf
+          - backend: aya-rs
+            xtask_backend: aya
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bpftool clang libclang-dev libelf-dev llvm pkg-config zlib1g-dev
+      - name: Install Aya eBPF linker
+        if: matrix.xtask_backend == 'aya'
+        run: cargo install bpf-linker --locked
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Build
+        run: cargo xtask build --backend ${{ matrix.xtask_backend }} --skip-frontend-deps
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev libelf-dev pkg-config zlib1g-dev
+      - name: Collect libbpf-rs coverage
+        run: cargo llvm-cov --workspace --all-targets --no-report
+      - name: Collect aya-rs coverage
+        run: cargo llvm-cov --workspace --all-targets --no-default-features --features ttyrecall/ebpf-aya --no-report
+      - name: Generate merged coverage report
+        run: cargo llvm-cov report --lcov --output-path lcov.info
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+          verbose: true

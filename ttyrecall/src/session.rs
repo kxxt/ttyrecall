@@ -269,7 +269,7 @@ enum StagedEvent {
     Write { content: String, time_ns: u64 },
 }
 
-/// A measured [`File`]` that records the amount of writes occurred.
+/// A measured [`File`] that records the amount of writes that occurred.
 struct MeasuredFile {
     inner: File,
     total_writes: Rc<RefCell<usize>>,

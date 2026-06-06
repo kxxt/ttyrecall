@@ -45,7 +45,7 @@ pub enum Command {
         )]
         config: Option<PathBuf>,
     },
-    #[clap(about = "Run ttyrecall web interface without previllege")]
+    #[clap(about = "Run ttyrecall web interface without privilege")]
     Web {
         #[clap(long, help = "Open the web interface in your browser")]
         open: bool,
