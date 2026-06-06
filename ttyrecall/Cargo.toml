@@ -34,7 +34,7 @@ thiserror = "1.0.64"
 axum = "0.7.9"
 tokio-util = { version = "0.7.12", features = ["io"] }
 base64 = "0.22.1"
-rand = "0.8.5"
+rand = "0.8.6"
 pam = "0.8.0"
 tower-http = { version = "0.5.2", features = ["fs"] }
 constant_time_eq = "0.3.0"
