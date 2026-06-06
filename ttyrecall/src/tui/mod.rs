@@ -93,10 +93,8 @@ fn run_loop(
                         }
                     }
                 }
-                CrosstermEvent::Mouse(mouse) => {
-                    if !app.has_pending_delete_confirmation() {
-                        handle_mouse(mouse, app, &click_map, &mut dragging);
-                    }
+                CrosstermEvent::Mouse(mouse) if !app.has_pending_delete_confirmation() => {
+                    handle_mouse(mouse, app, &click_map, &mut dragging);
                 }
                 _ => {}
             }
