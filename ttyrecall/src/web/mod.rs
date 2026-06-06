@@ -9,6 +9,8 @@ use axum::{
 };
 use tower_http::services::ServeDir;
 
+use crate::catalog::RecordingIndex;
+
 mod config;
 mod pages;
 mod pam;
@@ -18,10 +20,6 @@ mod state;
 mod watcher;
 
 pub use config::{current_user_mode, WebMode};
-pub(crate) use recordings::{
-    heatmap_for_user, list_recordings_for_user, read_cast_bytes, resolve_recording_path,
-    HeatmapDay, RecordingIndex, RecordingInfo,
-};
 
 pub(crate) struct BrowseContext {
     pub(crate) storage_root: PathBuf,
@@ -58,7 +56,7 @@ pub async fn run(
     let single_user = config::resolve_single_user(&mode, &config)?;
     let single_user_token = config::prepare_single_user_token(&mode, &config);
 
-    let recording_index = Arc::new(StdRwLock::new(recordings::RecordingIndex::default()));
+    let recording_index = Arc::new(StdRwLock::new(RecordingIndex::default()));
     watcher::spawn_recording_watcher(config.root.clone(), recording_index.clone())?;
 
     let state = Arc::new(state::AppState::new(

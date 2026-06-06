@@ -7,7 +7,9 @@ use std::{
 
 use tokio::sync::RwLock;
 
-use super::{config::SingleUser, recordings::RecordingIndex};
+use crate::catalog::RecordingIndex;
+
+use super::config::SingleUser;
 
 #[derive(Debug)]
 pub(super) struct Session {

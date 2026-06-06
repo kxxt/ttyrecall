@@ -28,7 +28,7 @@ impl Manager {
     /// Create a new manager,
     /// It could be opened in exclusive mode to ensure two daemons won't step
     /// on each other's toes.
-    pub fn new(dir: String, exclusive: bool, compress: Compress) -> color_eyre::Result<Self> {
+    pub fn new(dir: String, _exclusive: bool, compress: Compress) -> color_eyre::Result<Self> {
         let root = PathBuf::from(dir);
         let meta = root
             .metadata()

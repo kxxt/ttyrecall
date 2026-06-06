@@ -7,7 +7,7 @@ use std::{
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use log::{error, warn};
 
-use super::recordings::RecordingIndex;
+use crate::catalog::RecordingIndex;
 
 #[derive(Debug)]
 struct RecordingWatcher {
