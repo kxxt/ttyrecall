@@ -7,6 +7,7 @@ use daemon::Daemon;
 
 mod catalog;
 mod cli;
+mod config;
 mod daemon;
 mod manager;
 mod player;
@@ -21,7 +22,7 @@ async fn main() -> color_eyre::Result<()> {
     let cmdline = cli::CommandLine::parse();
     match cmdline.command {
         Command::Daemon { config } => {
-            Daemon::new(toml::from_str(&std::fs::read_to_string(config)?)?)?
+            Daemon::new(config::load_required(config)?.daemon)?
                 .run()
                 .await?;
         }

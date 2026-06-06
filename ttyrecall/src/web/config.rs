@@ -1,7 +1,8 @@
 use std::{path::PathBuf, time::Duration};
 
 use nix::unistd::{Uid, User};
-use serde::Deserialize;
+
+use crate::config as common_config;
 
 use super::session::new_session_token;
 
@@ -9,18 +10,6 @@ use super::session::new_session_token;
 pub enum WebMode {
     Service,
     SingleUser { uid: u32, username: String },
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct WebConfigFile {
-    bind: Option<String>,
-    root: Option<String>,
-    pam_service: Option<String>,
-    session_ttl_minutes: Option<u64>,
-    frontend_root: Option<String>,
-    single_user_token: Option<String>,
-    single_user_uid: Option<u32>,
-    single_user_username: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,28 +32,18 @@ pub(super) struct SingleUser {
 
 pub(crate) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::Result<WebConfig> {
     let default_bind = "127.0.0.1:8450".to_string();
-    let default_storage = "/var/lib/ttyrecall".to_string();
     let default_pam = "login".to_string();
     let default_ttl = Duration::from_secs(60 * 60);
 
-    let path = match path {
-        Some(path) => path,
-        None => match mode {
-            WebMode::Service => PathBuf::from("/etc/ttyrecall/web.toml"),
-            WebMode::SingleUser { .. } => default_user_config_path(),
-        },
+    let app_config = match mode {
+        WebMode::Service => common_config::load_system(path)?,
+        WebMode::SingleUser { .. } => common_config::load_system_with_user_override(path)?,
     };
-
-    let file_config = if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        toml::from_str::<WebConfigFile>(&content)?
-    } else {
-        WebConfigFile::default()
-    };
+    let file_config = app_config.web;
 
     Ok(WebConfig {
         bind: file_config.bind.unwrap_or(default_bind),
-        root: PathBuf::from(file_config.root.unwrap_or(default_storage)),
+        root: PathBuf::from(app_config.root),
         pam_service: file_config.pam_service.unwrap_or(default_pam),
         session_ttl: Duration::from_secs(
             file_config
@@ -158,16 +137,6 @@ pub fn current_user_mode() -> color_eyre::Result<WebMode> {
     }
 
     Ok(WebMode::SingleUser { uid, username })
-}
-
-fn default_user_config_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(path).join("ttyrecall/web.toml");
-    }
-    if let Some(path) = std::env::var_os("HOME") {
-        return PathBuf::from(path).join(".config/ttyrecall/web.toml");
-    }
-    PathBuf::from("./web.toml")
 }
 
 fn default_frontend_root() -> PathBuf {

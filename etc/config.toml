@@ -1,8 +1,13 @@
-######################################
-# Configuration for ttyrecall daemon #
-######################################
+############################
+# ttyrecall configuration #
+############################
 
+# Common configuration
 root = "/var/lib/ttyrecall"
+
+# Daemon configuration
+[daemon]
+
 # Compression
 # - none        : no compression
 # - zstd        : zstd with default compression level
@@ -13,12 +18,15 @@ compress = "zstd"
 # - blocklist: Record all pty sessions by default, but sessions from listed users/uids won't be recorded
 # - allowlist: Only record the pty sessions from listed users/uids
 mode = "blocklist"
+
 # User names
 users = []
+
 # UIDs
 uids = [
     0, # The root user's session is not interesting most of the time
 ]
+
 # Ignore pty sessions opened by process with following comms
 excluded_comms = [
     "sudo", # While sudo opens a new pty but we also have the contents available in parent pty.
@@ -29,3 +37,20 @@ excluded_comms = [
 # Unit: bytes
 # A special value of zero will disable the soft budget.
 soft_budget = 52428800
+
+# Web config
+[web]
+
+bind = "127.0.0.1:8450"
+frontend_root = "/usr/share/ttyrecall/web"
+
+# Authentication
+pam_service = "login"
+session_ttl_minutes = 60
+
+# single_user_token = "YOUR_SECRET_LOGIN_TOKEN"
+# single_user_uid = 1000
+# single_user_username = "username"
+
+# TUI config
+[tui]

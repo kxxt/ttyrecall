@@ -17,10 +17,9 @@ pub enum Command {
     Daemon {
         #[clap(
             long,
-            help = "Path to configuration file",
-            default_value = "/etc/ttyrecall/daemon.toml"
+            help = "Path to config file, /etc/ttyrecall/config.toml by default"
         )]
-        config: String,
+        config: Option<PathBuf>,
     },
     #[clap(about = "Play recorded file(s)")]
     Play {
@@ -31,7 +30,7 @@ pub enum Command {
     Browse {
         #[clap(
             long,
-            help = "Path to config file, $XDG_CONFIG_HOME/ttyrecall/web.toml by default"
+            help = "Path to config file; by default loads /etc/ttyrecall/config.toml with user overrides from $XDG_CONFIG_HOME/ttyrecall/config.toml"
         )]
         config: Option<PathBuf>,
     },
@@ -40,7 +39,10 @@ pub enum Command {
     // and one that a user could launch to view their own archive.
     #[clap(about = "Run ttyrecall web interface service")]
     WebService {
-        #[clap(long, help = "Path to config file, /etc/ttyrecall/web.toml by default")]
+        #[clap(
+            long,
+            help = "Path to config file, /etc/ttyrecall/config.toml by default"
+        )]
         config: Option<PathBuf>,
     },
     #[clap(about = "Run ttyrecall web interface without previllege")]
@@ -49,7 +51,7 @@ pub enum Command {
         open: bool,
         #[clap(
             long,
-            help = "Path to config file, $XDG_CONFIG_HOME/ttyrecall/web.toml by default"
+            help = "Path to config file; by default loads /etc/ttyrecall/config.toml with user overrides from $XDG_CONFIG_HOME/ttyrecall/config.toml"
         )]
         config: Option<PathBuf>,
     },

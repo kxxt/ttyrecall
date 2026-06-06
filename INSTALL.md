@@ -44,6 +44,8 @@ Set env `ZSTD_SYS_USE_PKG_CONFIG=1` to dynamically link to system zstd library.
 
 ## Config
 
-`etc/daemon.toml` provides a sample daemon config file.
+`etc/config.toml` provides a sample shared config file for daemon, web, and TUI subcommands. The system-wide runtime path is `/etc/ttyrecall/config.toml`.
+
+For `ttyrecall web` and `ttyrecall browse`, user config is also loaded from `$XDG_CONFIG_HOME/ttyrecall/config.toml` or `~/.config/ttyrecall/config.toml`. Values in the user config override system-wide values field by field. `ttyrecall daemon` and `ttyrecall web-service` use the system-wide config only.
 
 See the `ttyrecall-git` AUR package for a simple systemd service.

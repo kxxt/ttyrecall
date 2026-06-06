@@ -21,6 +21,35 @@ pub struct DaemonConfig {
     pub soft_budget: usize,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct DaemonConfigFile {
+    /// A list of users.
+    pub users: Option<HashSet<String>>,
+    /// A list of uids
+    pub uids: Option<HashSet<u32>>,
+    /// Mode that determines the meaning of users/uids
+    pub mode: Option<Mode>,
+    /// Compression
+    pub compress: Option<Compress>,
+    /// Excluded comms
+    pub excluded_comms: Option<HashSet<Comm>>,
+    /// Soft budget
+    pub soft_budget: Option<usize>,
+}
+
+impl DaemonConfigFile {
+    pub(crate) fn merge(self, override_config: Self) -> Self {
+        Self {
+            users: override_config.users.or(self.users),
+            uids: override_config.uids.or(self.uids),
+            mode: override_config.mode.or(self.mode),
+            compress: override_config.compress.or(self.compress),
+            excluded_comms: override_config.excluded_comms.or(self.excluded_comms),
+            soft_budget: override_config.soft_budget.or(self.soft_budget),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Compress {
     None,
@@ -34,6 +63,21 @@ pub enum Mode {
     BlockList = RECALL_CONFIG_MODE_BLOCKLIST as isize,
     /// Only capture ptys from allow listed user/uids
     AllowList = RECALL_CONFIG_MODE_ALLOWLIST as isize,
+}
+
+impl DaemonConfig {
+    pub(crate) fn from_file(root: String, config: Option<DaemonConfigFile>) -> Self {
+        let config = config.unwrap_or_default();
+        Self {
+            users: config.users.unwrap_or_default(),
+            uids: config.uids.unwrap_or_else(default_uids),
+            mode: config.mode.unwrap_or(Mode::BlockList),
+            root,
+            compress: config.compress.unwrap_or(Compress::Zstd(None)),
+            excluded_comms: config.excluded_comms.unwrap_or_else(default_excluded_comms),
+            soft_budget: config.soft_budget.unwrap_or(52_428_800),
+        }
+    }
 }
 
 impl Display for Compress {
@@ -91,15 +135,34 @@ impl<'de> Deserialize<'de> for Comm {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let bytes = s.as_bytes();
-        if s.len() > 15 {
-            return Err(serde::de::Error::invalid_value(
+        Self::from_name(&s).map_err(|_| {
+            serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&s),
                 &"A valid comm string (byte length is less than 16)",
-            ));
+            )
+        })
+    }
+}
+
+impl Comm {
+    pub(crate) fn from_name(name: &str) -> Result<Self, ()> {
+        let bytes = name.as_bytes();
+        if name.len() > 15 {
+            return Err(());
         }
         let mut comm = [0; 16];
         comm[..bytes.len()].copy_from_slice(bytes);
         Ok(Self(comm))
     }
+}
+
+fn default_uids() -> HashSet<u32> {
+    HashSet::from([0])
+}
+
+fn default_excluded_comms() -> HashSet<Comm> {
+    HashSet::from([
+        Comm::from_name("sudo").expect("static comm is valid"),
+        Comm::from_name("asciinema").expect("static comm is valid"),
+    ])
 }
