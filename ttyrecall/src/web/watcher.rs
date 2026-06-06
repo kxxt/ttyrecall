@@ -13,6 +13,7 @@ use crate::catalog::RecordingIndex;
 #[derive(Debug)]
 struct RecordingWatcher {
     storage_root: PathBuf,
+    scan_roots: Vec<PathBuf>,
     index: Arc<StdRwLock<RecordingIndex>>,
     inotify: Inotify,
     watch_paths: std::collections::HashMap<PathBuf, WatchDescriptor>,
@@ -20,9 +21,14 @@ struct RecordingWatcher {
 }
 
 impl RecordingWatcher {
-    fn new(storage_root: PathBuf, index: Arc<StdRwLock<RecordingIndex>>) -> std::io::Result<Self> {
+    fn new(
+        storage_root: PathBuf,
+        scan_roots: Vec<PathBuf>,
+        index: Arc<StdRwLock<RecordingIndex>>,
+    ) -> std::io::Result<Self> {
         Ok(Self {
             storage_root,
+            scan_roots,
             index,
             inotify: Inotify::init()?,
             watch_paths: std::collections::HashMap::new(),
@@ -35,7 +41,14 @@ impl RecordingWatcher {
         self.watch_paths.clear();
         self.watched_dirs.clear();
         self.index.write().unwrap().clear();
-        Ok(self.scan_dir_recursive(self.storage_root.clone())?)
+        for root in self.scan_roots.clone() {
+            match self.scan_dir_recursive(root) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(())
     }
 
     fn run(&mut self) -> color_eyre::Result<()> {
@@ -202,9 +215,10 @@ impl RecordingWatcher {
 
 pub(super) fn spawn_recording_watcher(
     storage_root: PathBuf,
+    scan_roots: Vec<PathBuf>,
     index: Arc<StdRwLock<RecordingIndex>>,
 ) -> color_eyre::Result<()> {
-    let mut watcher = RecordingWatcher::new(storage_root, index)?;
+    let mut watcher = RecordingWatcher::new(storage_root, scan_roots, index)?;
     watcher.rebuild()?;
     std::thread::Builder::new()
         .name("ttyrecall-inotify".to_string())
@@ -214,4 +228,65 @@ pub(super) fn spawn_recording_watcher(
             }
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::{Arc, RwLock as StdRwLock},
+    };
+
+    use crate::catalog::RecordingIndex;
+
+    use super::RecordingWatcher;
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ttyrecall-watcher-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn single_user_rebuild_does_not_watch_other_user_dirs() {
+        let root = temp_root("single-user-scope");
+        let user_dir = root.join("1000/2026/06/06");
+        let other_dir = root.join("1001");
+        fs::create_dir_all(&user_dir).unwrap();
+        fs::create_dir_all(&other_dir).unwrap();
+        fs::set_permissions(&other_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let index = Arc::new(StdRwLock::new(RecordingIndex::default()));
+        let mut watcher =
+            RecordingWatcher::new(root.clone(), vec![root.join("1000")], index).unwrap();
+
+        let result = watcher.rebuild();
+
+        fs::set_permissions(&other_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(result.is_ok());
+        assert!(watcher
+            .watch_paths
+            .keys()
+            .all(|path| path.starts_with(root.join("1000"))));
+    }
+
+    #[test]
+    fn missing_single_user_dir_rebuilds_as_empty_index() {
+        let root = temp_root("missing-user-dir");
+        let index = Arc::new(StdRwLock::new(RecordingIndex::default()));
+        let mut watcher =
+            RecordingWatcher::new(root.clone(), vec![root.join("1000")], index.clone()).unwrap();
+
+        watcher.rebuild().unwrap();
+
+        assert!(watcher.watch_paths.is_empty());
+        assert!(index.read().unwrap().list_for_user(1000).is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -37,7 +37,11 @@ pub(crate) fn browse_context(config_path: Option<PathBuf>) -> color_eyre::Result
     };
 
     let recording_index = Arc::new(StdRwLock::new(RecordingIndex::default()));
-    watcher::spawn_recording_watcher(config.root.clone(), recording_index.clone())?;
+    watcher::spawn_recording_watcher(
+        config.root.clone(),
+        recording_watch_roots(&config.root, single_user.uid),
+        recording_index.clone(),
+    )?;
 
     Ok(BrowseContext {
         storage_root: config.root,
@@ -57,7 +61,11 @@ pub async fn run(
     let single_user_token = config::prepare_single_user_token(&mode, &config);
 
     let recording_index = Arc::new(StdRwLock::new(RecordingIndex::default()));
-    watcher::spawn_recording_watcher(config.root.clone(), recording_index.clone())?;
+    watcher::spawn_recording_watcher(
+        config.root.clone(),
+        recording_scan_roots(&config.root, single_user.as_ref()),
+        recording_index.clone(),
+    )?;
 
     let state = Arc::new(state::AppState::new(
         config.root.clone(),
@@ -101,4 +109,18 @@ pub async fn run(
     }
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn recording_scan_roots(
+    storage_root: &std::path::Path,
+    single_user: Option<&config::SingleUser>,
+) -> Vec<PathBuf> {
+    match single_user {
+        Some(single_user) => recording_watch_roots(storage_root, single_user.uid),
+        None => vec![storage_root.to_path_buf()],
+    }
+}
+
+fn recording_watch_roots(storage_root: &std::path::Path, uid: u32) -> Vec<PathBuf> {
+    vec![storage_root.join(uid.to_string())]
 }
