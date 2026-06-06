@@ -30,8 +30,8 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::{error, info, trace, warn};
 use ttyrecall_common::{
-    EventKind, ShortEvent, Size, WriteEventHead, RECALL_CONFIG_MODE_ALLOWLIST,
-    RECALL_CONFIG_MODE_BLOCKLIST, TTY_WRITE_MAX,
+    RawShortEvent, Size, WriteEventHead, RECALL_CONFIG_MODE_ALLOWLIST, RECALL_CONFIG_MODE_BLOCKLIST,
+    TTY_WRITE_MAX,
 };
 use vmlinux::{tty_driver, tty_struct, winsize};
 
@@ -138,7 +138,7 @@ fn try_pty_write(ctx: FExitContext) -> Result<u32, u32> {
     // Arguments
     let tty: *const tty_struct = unsafe { ctx.arg(0) };
     let buf: *const u8 = unsafe { ctx.arg(1) };
-    let size: ssize_t = unsafe { ctx.arg(2) };
+    let _size: ssize_t = unsafe { ctx.arg(2) };
     let ret: ssize_t = unsafe { ctx.arg(3) };
     if ret < 0 {
         return Err(u32::MAX);
@@ -256,14 +256,6 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
         .map(|t| *t)
         .unwrap_or_default();
     let uid = ctx.uid();
-    let should_trace = match mode {
-        RECALL_CONFIG_MODE_BLOCKLIST => unsafe { USERS.get(&uid) }.is_none(),
-        RECALL_CONFIG_MODE_ALLOWLIST => unsafe { USERS.get(&uid) }.is_some(),
-        _ => {
-            error!(&ctx, "Invalid mode: {}", mode);
-            false
-        }
-    };
     info!(&ctx, "function pty_unix98_install called");
     // Arguments
     let _driver: *const tty_driver = unsafe { ctx.arg(0) };
@@ -277,21 +269,28 @@ fn try_pty_unix98_install(ctx: FExitContext) -> Result<u32, u32> {
     let id = unsafe { bpf_probe_read_kernel(&(*tty).index).unwrap() } as u32;
     let time = unsafe { bpf_ktime_get_tai_ns() };
     let comm = canonicalized_comm();
+    let should_trace = if uid == 0 && is_sshd_comm(&comm) {
+        true
+    } else {
+        match mode {
+            RECALL_CONFIG_MODE_BLOCKLIST => unsafe { USERS.get(&uid) }.is_none(),
+            RECALL_CONFIG_MODE_ALLOWLIST => unsafe { USERS.get(&uid) }.is_some(),
+            _ => {
+                error!(&ctx, "Invalid mode: {}", mode);
+                false
+            }
+        }
+    };
     if should_trace && unsafe { EXCLUDED_COMMS.get(&comm) }.is_none() {
         TRACED_PTYS.insert(&id, &0, 0).unwrap();
     } else {
         return Ok(2);
     }
-    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
+    let Some(mut reserved) = EVENT_RING.reserve::<RawShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
-    reserved.write(ShortEvent {
-        uid,
-        id,
-        time,
-        kind: EventKind::PtyInstall { comm },
-    });
+    reserved.write(RawShortEvent::pty_install(uid, id, time, comm));
     reserved.submit(0);
     info!(
         &ctx,
@@ -318,16 +317,11 @@ fn try_pty_unix98_remove(ctx: FExitContext) -> Result<u32, u32> {
     }
     TRACED_PTYS.remove(&id).unwrap();
     let time = unsafe { bpf_ktime_get_tai_ns() };
-    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
+    let Some(mut reserved) = EVENT_RING.reserve::<RawShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
-    reserved.write(ShortEvent {
-        uid,
-        id,
-        time,
-        kind: EventKind::PtyRemove,
-    });
+    reserved.write(RawShortEvent::pty_remove(uid, id, time));
     reserved.submit(0);
     info!(&ctx, "pty_unix98_remove uid={}, id={}", uid, id,);
     Ok(0)
@@ -355,21 +349,19 @@ fn try_pty_resize(ctx: FExitContext) -> Result<u32, u32> {
         return Ok(3);
     }
     let winsize = unsafe { bpf_probe_read_kernel(ws).unwrap() };
-    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
+    let Some(mut reserved) = EVENT_RING.reserve::<RawShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
-    reserved.write(ShortEvent {
+    reserved.write(RawShortEvent::pty_resize(
         uid,
         id,
         time,
-        kind: EventKind::PtyResize {
-            size: Size {
-                width: winsize.ws_col,
-                height: winsize.ws_row,
-            },
+        Size {
+            width: winsize.ws_col,
+            height: winsize.ws_row,
         },
-    });
+    ));
     reserved.submit(0);
     info!(
         &ctx,
@@ -403,21 +395,19 @@ fn try_tty_do_resize(ctx: FExitContext) -> Result<u32, u32> {
         return Ok(3);
     }
     let winsize = unsafe { bpf_probe_read_kernel(ws).unwrap() };
-    let Some(mut reserved) = EVENT_RING.reserve::<ShortEvent>(0) else {
+    let Some(mut reserved) = EVENT_RING.reserve::<RawShortEvent>(0) else {
         error!(&ctx, "Failed to reserve event!");
         return Err(u32::MAX);
     };
-    reserved.write(ShortEvent {
-        uid: ctx.uid(),
+    reserved.write(RawShortEvent::pty_resize(
+        ctx.uid(),
         id,
         time,
-        kind: EventKind::PtyResize {
-            size: Size {
-                width: winsize.ws_col,
-                height: winsize.ws_row,
-            },
+        Size {
+            width: winsize.ws_col,
+            height: winsize.ws_row,
         },
-    });
+    ));
     reserved.submit(0);
     info!(
         &ctx,
@@ -443,6 +433,10 @@ fn canonicalized_comm() -> [u8; 16] {
 
 fn should_trace(id: u32) -> bool {
     unsafe { TRACED_PTYS.get(&id) }.is_some()
+}
+
+fn is_sshd_comm(comm: &[u8; 16]) -> bool {
+    &comm.as_slice()[0..13] == b"sshd-session\0"
 }
 
 #[panic_handler]

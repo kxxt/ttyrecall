@@ -1,7 +1,12 @@
-use std::{borrow::Cow, collections::HashSet, num::NonZeroUsize, rc::Rc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    num::NonZeroUsize,
+    os::{fd::RawFd, unix::fs::MetadataExt},
+    path::PathBuf,
+    rc::Rc,
+};
 
-use aya::{include_bytes_aligned, maps::MapData, programs::FExit, Bpf, Btf};
-use aya_log::BpfLogger;
 use color_eyre::eyre::eyre;
 use log::{debug, error, info, warn};
 use nix::unistd::User;
@@ -9,14 +14,16 @@ use tokio::{
     io::unix::AsyncFd,
     select,
     signal::{unix::signal, unix::SignalKind},
+    time::{interval, MissedTickBehavior},
 };
 use ttyrecall_common::{
-    EventKind, ShortEvent, WriteEvent, WriteEventHead, RECALL_CONFIG_INDEX_MODE,
+    EventKind, RawShortEvent, RawWriteChunkEvent, WriteEventHead, RAW_EVENT_KIND_WRITE_CHUNK,
 };
 
 use crate::{manager::Manager, session::PtySessionManager};
 
 mod config;
+mod ebpf;
 
 pub use config::*;
 
@@ -62,59 +69,19 @@ impl Daemon {
             debug!("remove limit on locked memory failed, ret is: {}", ret);
         }
 
-        // This will include your eBPF object file as raw bytes at compile-time and load it at
-        // runtime. This approach is recommended for most real-world use cases. If you would
-        // like to specify the eBPF program at runtime rather than at compile-time, you can
-        // reach for `Bpf::load_file` instead.
-        #[cfg(debug_assertions)]
-        let mut bpf = Bpf::load(include_bytes_aligned!(
-            "../../target/bpfel-unknown-none/debug/ttyrecall"
-        ))?;
-        #[cfg(not(debug_assertions))]
-        let mut bpf = Bpf::load(include_bytes_aligned!(
-            "../../target/bpfel-unknown-none/release/ttyrecall"
-        ))?;
-        if let Err(e) = BpfLogger::init(&mut bpf) {
-            // This can happen if you remove all log statements from your eBPF program.
-            warn!("failed to initialize eBPF logger: {}", e);
-        }
-        let btf = Btf::from_sys_fs()?;
-        let mut config =
-            aya::maps::Array::<&mut MapData, u64>::try_from(bpf.map_mut("CONFIG").unwrap())?;
-        config.set(RECALL_CONFIG_INDEX_MODE, self.mode as u64, 0)?;
-        let mut users =
-            aya::maps::HashMap::<&mut MapData, u32, u8>::try_from(bpf.map_mut("USERS").unwrap())?;
-        for uid in self.uids.iter() {
-            users.insert(uid, 0u8, 0)?;
-        }
-        let mut excluded_comms = aya::maps::HashMap::<&mut MapData, [u8; 16], u8>::try_from(
-            bpf.map_mut("EXCLUDED_COMMS").unwrap(),
-        )?;
-        for comm in self.excluded_comms.iter() {
-            excluded_comms.insert(comm.0, 0u8, 0)?;
-        }
-        let install_prog: &mut FExit = bpf.program_mut("pty_unix98_install").unwrap().try_into()?;
-        install_prog.load("pty_unix98_install", &btf)?;
-        install_prog.attach()?;
-        let remove_prog: &mut FExit = bpf.program_mut("pty_unix98_remove").unwrap().try_into()?;
-        remove_prog.load("pty_unix98_remove", &btf)?;
-        remove_prog.attach()?;
-        let pty_resize_prog: &mut FExit = bpf.program_mut("pty_resize").unwrap().try_into()?;
-        pty_resize_prog.load("pty_resize", &btf)?;
-        pty_resize_prog.attach()?;
-        let tty_do_resize_prog: &mut FExit =
-            bpf.program_mut("tty_do_resize").unwrap().try_into()?;
-        tty_do_resize_prog.load("tty_do_resize", &btf)?;
-        tty_do_resize_prog.attach()?;
-        let pty_write_prog: &mut FExit = bpf.program_mut("pty_write").unwrap().try_into()?;
-        pty_write_prog.load("pty_write", &btf)?;
-        pty_write_prog.attach()?;
+        let mut backend =
+            ebpf::EbpfBackend::load(self.mode as u64, &self.uids, &self.excluded_comms)?;
         info!("Waiting for Ctrl-C...");
-        let event_ring = aya::maps::RingBuf::try_from(bpf.map_mut("EVENT_RING").unwrap())?;
-        let mut async_fd = AsyncFd::new(event_ring)?;
-        let mut manager = PtySessionManager::new(self.manager.clone(), self.budget);
+        let mut async_fd = AsyncFd::new(EventFd(backend.event_fd()))?;
+        let mut sessions = SessionDispatcher::new(
+            PtySessionManager::new(self.manager.clone(), self.budget),
+            self.mode,
+            self.uids.clone(),
+        );
         let mut interrupt_stream = signal(SignalKind::interrupt())?;
         let mut termination_stream = signal(SignalKind::terminate())?;
+        let mut event_poll = interval(std::time::Duration::from_millis(100));
+        event_poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             select! {
                 _ = termination_stream.recv()  => {
@@ -124,57 +91,90 @@ impl Daemon {
                 _ = interrupt_stream.recv()  => {
                     break;
                 }
+                _ = event_poll.tick() => {
+                    sessions.resolve_pending()?;
+                    backend.consume(&mut |read| Self::handle_event(read, &mut sessions))?;
+                }
                 guard = async_fd.readable_mut() => {
                     let mut guard = guard?;
-                    let rb = guard.get_inner_mut();
-                    while let Some(read) = rb.next() {
-                        const SHORT_EVENT_SIZE: usize = std::mem::size_of::<ShortEvent>();
-                        match read.len() {
-                            SHORT_EVENT_SIZE => {
-                                let event: &ShortEvent = unsafe { &*(read.as_ptr().cast()) };
-                                match event.kind {
-                                    EventKind::PtyInstall { comm } => {
-                                        manager.add_session(event.id, event.uid, Self::escape_comm(comm), event.time)?;
-                                    },
-                                    EventKind::PtyRemove => {
-                                        manager.remove_session(event.id);
-                                    },
-                                    EventKind::PtyResize { size } => {
-                                        if manager.exists(event.id) {
-                                            manager.resize_session(event.id, event.time, size)?;
-                                        }
-                                    }
-                                }
-                            }
-                            size if size > SHORT_EVENT_SIZE => {
-                                assert!(size >= size_of::<WriteEventHead>(), "Invalid size {size}!");
-                                let event: &WriteEvent = unsafe {
-                                    // SAFETY:
-                                    // *const [T] encodes the number of elements and when we cast it to another fat pointer,
-                                    // the encoded length is preserved.
-                                    // https://github.com/rust-lang/reference/pull/1417
-                                    &*(&read[..(size - size_of::<WriteEventHead>())] as *const [u8] as *const WriteEvent)
-                                };
-                                if manager.exists(event.head.id) {
-                                    let slice = &event.data;
-                                    let str = match std::str::from_utf8(slice) {
-                                        Ok(s) => Cow::Borrowed(s),
-                                        Err(e) => {
-                                            error!("Not valid utf8: {e}: {slice:?}");
-                                            String::from_utf8_lossy(slice)
-                                        }
-                                    };
-                                    manager.write_to(event.head.id, &str, event.head.time)?;
-                                }
-                            }
-                            _ => unreachable!()
-                        }
-                    }
+                    backend.consume(&mut |read| Self::handle_event(read, &mut sessions))?;
                     guard.clear_ready();
                 }
             }
         }
         info!("Exiting...");
+        Ok(())
+    }
+
+    fn handle_event(read: &[u8], sessions: &mut SessionDispatcher) -> color_eyre::Result<()> {
+        const SHORT_EVENT_SIZE: usize = std::mem::size_of::<RawShortEvent>();
+        const WRITE_CHUNK_EVENT_SIZE: usize = std::mem::size_of::<RawWriteChunkEvent>();
+        match read.len() {
+            SHORT_EVENT_SIZE => {
+                let raw = read_plain::<RawShortEvent>(read);
+                let Some(event) = raw.short_event() else {
+                    warn!("unknown eBPF short event kind {}", raw.kind);
+                    return Ok(());
+                };
+                match event.kind {
+                    EventKind::PtyInstall { comm } => {
+                        sessions.add_session(
+                            event.id,
+                            event.uid,
+                            Self::escape_comm(comm),
+                            event.time,
+                        )?;
+                    }
+                    EventKind::PtyRemove => {
+                        sessions.remove_session(event.id);
+                    }
+                    EventKind::PtyResize { size } => {
+                        sessions.resize_session(event.id, event.time, size)?;
+                    }
+                }
+            }
+            WRITE_CHUNK_EVENT_SIZE => {
+                let event = read_plain::<RawWriteChunkEvent>(read);
+                if event.kind == RAW_EVENT_KIND_WRITE_CHUNK {
+                    let len = (event.len as usize).min(event.data.len());
+                    Self::write_to_session(sessions, event.id, event.time, &event.data[..len])?;
+                } else {
+                    Self::handle_write_event(read, sessions)?;
+                }
+            }
+            size if size > SHORT_EVENT_SIZE => {
+                Self::handle_write_event(read, sessions)?;
+            }
+            _ => warn!("invalid eBPF event size {}", read.len()),
+        }
+        Ok(())
+    }
+
+    fn handle_write_event(read: &[u8], sessions: &mut SessionDispatcher) -> color_eyre::Result<()> {
+        const WRITE_EVENT_HEAD_SIZE: usize = std::mem::size_of::<WriteEventHead>();
+        if read.len() < WRITE_EVENT_HEAD_SIZE {
+            warn!("invalid eBPF write event size {}", read.len());
+            return Ok(());
+        }
+        let head = read_plain::<WriteEventHead>(&read[..WRITE_EVENT_HEAD_SIZE]);
+        Self::write_to_session(sessions, head.id, head.time, &read[WRITE_EVENT_HEAD_SIZE..])?;
+        Ok(())
+    }
+
+    fn write_to_session(
+        sessions: &mut SessionDispatcher,
+        id: u32,
+        time: u64,
+        slice: &[u8],
+    ) -> color_eyre::Result<()> {
+        let str = match std::str::from_utf8(slice) {
+            Ok(s) => Cow::Borrowed(s),
+            Err(e) => {
+                error!("Not valid utf8: {e}: {slice:?}");
+                String::from_utf8_lossy(slice)
+            }
+        };
+        sessions.write_to(id, &str, time)?;
         Ok(())
     }
 
@@ -187,5 +187,233 @@ impl Daemon {
         )
         .into_owned()
         .replace('/', "_")
+    }
+}
+
+struct SessionDispatcher {
+    manager: PtySessionManager,
+    mode: Mode,
+    uids: HashSet<u32>,
+    pending_sshd: HashMap<u32, PendingSshdSession>,
+}
+
+struct PendingSshdSession {
+    comm: String,
+    start_ns: u64,
+    events: Vec<PendingEvent>,
+    buffered_bytes: usize,
+}
+
+enum PendingEvent {
+    Resize {
+        time_ns: u64,
+        size: ttyrecall_common::Size,
+    },
+    Write {
+        time_ns: u64,
+        content: String,
+    },
+}
+
+enum PendingActivation {
+    Activated,
+    Dropped,
+    StillPending,
+}
+
+const SSHD_PENDING_EVENT_MAX: usize = 256;
+const SSHD_PENDING_BYTES_MAX: usize = 1024 * 1024;
+
+impl SessionDispatcher {
+    fn new(manager: PtySessionManager, mode: Mode, uids: HashSet<u32>) -> Self {
+        Self {
+            manager,
+            mode,
+            uids,
+            pending_sshd: HashMap::new(),
+        }
+    }
+
+    fn add_session(
+        &mut self,
+        pty_id: u32,
+        uid: u32,
+        comm: String,
+        start_ns: u64,
+    ) -> color_eyre::Result<()> {
+        if should_resolve_sshd_owner(uid, &comm) {
+            self.pending_sshd.insert(
+                pty_id,
+                PendingSshdSession {
+                    comm,
+                    start_ns,
+                    events: Vec::new(),
+                    buffered_bytes: 0,
+                },
+            );
+            self.try_activate_pending(pty_id)?;
+            return Ok(());
+        }
+
+        if self.should_record_uid(uid) {
+            self.manager.add_session(pty_id, uid, comm, start_ns)?;
+        }
+        Ok(())
+    }
+
+    fn remove_session(&mut self, id: u32) {
+        self.pending_sshd.remove(&id);
+        self.manager.remove_session(id);
+    }
+
+    fn resize_session(
+        &mut self,
+        id: u32,
+        time_ns: u64,
+        size: ttyrecall_common::Size,
+    ) -> color_eyre::Result<()> {
+        match self.try_activate_pending(id)? {
+            PendingActivation::Dropped => return Ok(()),
+            PendingActivation::Activated | PendingActivation::StillPending => {}
+        }
+
+        if self.manager.exists(id) {
+            self.manager.resize_session(id, time_ns, size)?;
+        } else if let Some(pending) = self.pending_sshd.get_mut(&id) {
+            pending.events.push(PendingEvent::Resize { time_ns, size });
+            self.enforce_pending_limits(id);
+        }
+        Ok(())
+    }
+
+    fn write_to(&mut self, id: u32, content: &str, time_ns: u64) -> color_eyre::Result<()> {
+        match self.try_activate_pending(id)? {
+            PendingActivation::Dropped => return Ok(()),
+            PendingActivation::Activated | PendingActivation::StillPending => {}
+        }
+
+        if self.manager.exists(id) {
+            self.manager.write_to(id, content, time_ns)?;
+        } else if let Some(pending) = self.pending_sshd.get_mut(&id) {
+            pending.buffered_bytes += content.len();
+            pending.events.push(PendingEvent::Write {
+                time_ns,
+                content: content.to_owned(),
+            });
+            self.enforce_pending_limits(id);
+        }
+        Ok(())
+    }
+
+    fn resolve_pending(&mut self) -> color_eyre::Result<()> {
+        let ids: Vec<_> = self.pending_sshd.keys().copied().collect();
+        for id in ids {
+            self.try_activate_pending(id)?;
+        }
+        Ok(())
+    }
+
+    fn try_activate_pending(&mut self, id: u32) -> color_eyre::Result<PendingActivation> {
+        if !self.pending_sshd.contains_key(&id) {
+            return Ok(PendingActivation::Activated);
+        }
+
+        let Some(owner_uid) = pts_owner_uid(id) else {
+            return Ok(PendingActivation::StillPending);
+        };
+        if owner_uid == 0 {
+            return Ok(PendingActivation::StillPending);
+        }
+
+        if !self.should_record_uid(owner_uid) {
+            info!("drop sshd pty{id}: resolved owner uid {owner_uid} is filtered by policy");
+            self.pending_sshd.remove(&id);
+            return Ok(PendingActivation::Dropped);
+        }
+
+        let pending = self
+            .pending_sshd
+            .remove(&id)
+            .expect("pending sshd session checked above");
+        self.manager
+            .add_session(id, owner_uid, pending.comm, pending.start_ns)?;
+        for event in pending.events {
+            match event {
+                PendingEvent::Resize { time_ns, size } => {
+                    self.manager.resize_session(id, time_ns, size)?;
+                }
+                PendingEvent::Write { time_ns, content } => {
+                    self.manager.write_to(id, &content, time_ns)?;
+                }
+            }
+        }
+        Ok(PendingActivation::Activated)
+    }
+
+    fn should_record_uid(&self, uid: u32) -> bool {
+        match self.mode {
+            Mode::BlockList => !self.uids.contains(&uid),
+            Mode::AllowList => self.uids.contains(&uid),
+        }
+    }
+
+    fn enforce_pending_limits(&mut self, id: u32) {
+        let Some(pending) = self.pending_sshd.get(&id) else {
+            return;
+        };
+        if pending.events.len() <= SSHD_PENDING_EVENT_MAX
+            && pending.buffered_bytes <= SSHD_PENDING_BYTES_MAX
+        {
+            return;
+        }
+        warn!("drop sshd pty{id}: owner uid was not resolved before pending buffer limit");
+        self.pending_sshd.remove(&id);
+    }
+}
+
+fn should_resolve_sshd_owner(uid: u32, comm: &str) -> bool {
+    uid == 0 && is_sshd_comm(comm)
+}
+
+fn is_sshd_comm(comm: &str) -> bool {
+    comm == "sshd-session"
+}
+
+fn pts_owner_uid(id: u32) -> Option<u32> {
+    PathBuf::from(format!("/dev/pts/{id}"))
+        .metadata()
+        .map(|meta| meta.uid())
+        .ok()
+}
+
+fn read_plain<T: Copy>(data: &[u8]) -> T {
+    assert!(data.len() >= std::mem::size_of::<T>());
+    unsafe { std::ptr::read_unaligned(data.as_ptr().cast()) }
+}
+
+#[derive(Debug)]
+struct EventFd(RawFd);
+
+impl std::os::fd::AsRawFd for EventFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_sshd_comm, should_resolve_sshd_owner};
+
+    #[test]
+    fn root_sshd_comms_need_owner_resolution() {
+        assert!(should_resolve_sshd_owner(0, "sshd-session"));
+        assert!(!should_resolve_sshd_owner(1000, "sshd-session"));
+        assert!(!should_resolve_sshd_owner(0, "bash"));
+    }
+
+    #[test]
+    fn sshd_comm_matches_openssh_variants() {
+        assert!(is_sshd_comm("sshd-session"));
+        assert!(!is_sshd_comm("sshd2"));
     }
 }

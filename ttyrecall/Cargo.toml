@@ -5,9 +5,15 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 publish = false
 
+[features]
+default = ["ebpf-libbpf"]
+ebpf-aya = ["dep:aya", "dep:aya-log"]
+ebpf-libbpf = ["dep:libbpf-rs"]
+
 [dependencies]
-aya = { version = "0.12", features = ["async_tokio"] }
-aya-log = "0.2"
+aya = { version = "0.12", features = ["async_tokio"], optional = true }
+aya-log = { version = "0.2", optional = true }
+libbpf-rs = { version = "0.26.2", optional = true }
 ttyrecall-common = { path = "../ttyrecall-common", features = ["user"] }
 env_logger = "0.10"
 libc = "0.2"

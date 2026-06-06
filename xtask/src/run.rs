@@ -5,11 +5,14 @@ use clap::Parser;
 
 use crate::{
     build::{build, Options as BuildOptions},
-    build_ebpf::Architecture,
+    build_ebpf::{Architecture, Backend},
 };
 
 #[derive(Debug, Parser)]
 pub struct Options {
+    /// Select which eBPF implementation to build and run
+    #[clap(default_value = "libbpf", long)]
+    pub backend: Backend,
     /// Set the endianness of the BPF target
     #[clap(default_value = "bpfel-unknown-none", long)]
     pub bpf_target: Architecture,
@@ -30,6 +33,7 @@ pub struct Options {
 pub fn run(opts: Options) -> Result<(), anyhow::Error> {
     // Build our ebpf program and the project
     build(BuildOptions {
+        backend: opts.backend,
         bpf_target: opts.bpf_target,
         release: opts.release,
         disable_resource_saving: opts.disable_resource_saving,

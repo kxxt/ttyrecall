@@ -3,10 +3,13 @@ use std::process::Command;
 use anyhow::Context as _;
 use clap::Parser;
 
-use crate::build_ebpf::{build_ebpf, Architecture, Options as BuildOptions};
+use crate::build_ebpf::{build_ebpf, Architecture, Backend, Options as BuildOptions};
 
 #[derive(Debug, Parser)]
 pub struct Options {
+    /// Select which eBPF implementation to build
+    #[clap(default_value = "libbpf", long)]
+    pub backend: Backend,
     /// Set the endianness of the BPF target
     #[clap(default_value = "bpfel-unknown-none", long)]
     pub bpf_target: Architecture,
@@ -23,6 +26,9 @@ fn build_project(opts: &Options) -> Result<(), anyhow::Error> {
     if opts.release {
         args.push("--release")
     }
+    if opts.backend == Backend::Aya {
+        args.extend(["--no-default-features", "--features", "ebpf-aya"]);
+    }
     let status = Command::new("cargo")
         .args(&args)
         .status()
@@ -35,6 +41,7 @@ fn build_project(opts: &Options) -> Result<(), anyhow::Error> {
 pub fn build(opts: Options) -> Result<(), anyhow::Error> {
     // build our ebpf program followed by our application
     build_ebpf(BuildOptions {
+        backend: opts.backend,
         target: opts.bpf_target,
         release: opts.release,
         disable_resource_saving: opts.disable_resource_saving,
