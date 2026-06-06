@@ -113,6 +113,10 @@ input {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   background: var(--accent);
   color: white;
   border: none;
@@ -135,6 +139,47 @@ button.secondary:hover {
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.lucide {
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+}
+
+.icon-button.compact {
+  width: 28px;
+  height: 28px;
+}
+
+.command-button {
+  min-width: 112px;
+}
+
+button.secondary.danger {
+  color: #b42318;
+  border-color: #d92d20;
+}
+
+button.secondary.danger:hover {
+  background: color-mix(in srgb, #d92d20 12%, transparent);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .actions {
@@ -198,6 +243,9 @@ button:disabled {
 }
 
 .heatmap-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 6px;
 }
 
@@ -240,6 +288,7 @@ th {
 
 .table-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 
@@ -420,4 +469,9 @@ th {
 :root[data-theme="dark"] .badge {
   background: #1e293b;
   color: #c7d2fe;
+}
+
+:root[data-theme="dark"] button.secondary.danger {
+  color: #f97066;
+  border-color: #f97066;
 }

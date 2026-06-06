@@ -26,11 +26,48 @@ a {
   text-decoration: none;
 }
 
+.icon-link,
+button.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+}
+
+.icon-link {
+  border-radius: 8px;
+}
+
+.icon-link:hover {
+  background: color-mix(in srgb, #38bdf8 12%, transparent);
+}
+
+.lucide {
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .header-actions {
   margin-left: auto;
 }
 
 button.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   color: #38bdf8;
   border: 1px solid #38bdf8;
@@ -38,6 +75,10 @@ button.secondary {
   padding: 8px 12px;
   font-size: 13px;
   cursor: pointer;
+}
+
+button.secondary.icon-button {
+  padding: 0;
 }
 
 button.secondary:hover {

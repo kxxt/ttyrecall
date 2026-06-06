@@ -12,10 +12,14 @@ import "../styles/view.css";
   </head>
   <body>
     <header>
-      <a href="/">Back</a>
+      <a href="/" class="icon-link" aria-label="Back" title="Back">
+        <i data-lucide="arrow-left" aria-hidden="true"></i>
+      </a>
       <div id="title">Recording</div>
       <div class="header-actions">
-        <button id="themeToggle" class="secondary" type="button">Theme</button>
+        <button id="themeToggle" class="secondary icon-button" type="button" aria-label="Theme" title="Theme">
+          <i data-lucide="monitor-cog" aria-hidden="true"></i>
+        </button>
       </div>
     </header>
     <div id="player"></div>

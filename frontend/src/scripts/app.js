@@ -1,4 +1,32 @@
 import { create as createPlayer } from "asciinema-player";
+import createElement from "lucide/dist/esm/createElement.mjs";
+import Download from "lucide/dist/esm/icons/download.mjs";
+import LayoutGrid from "lucide/dist/esm/icons/layout-grid.mjs";
+import List from "lucide/dist/esm/icons/list.mjs";
+import LogIn from "lucide/dist/esm/icons/log-in.mjs";
+import LogOut from "lucide/dist/esm/icons/log-out.mjs";
+import MonitorCog from "lucide/dist/esm/icons/monitor-cog.mjs";
+import Moon from "lucide/dist/esm/icons/moon.mjs";
+import Play from "lucide/dist/esm/icons/play.mjs";
+import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
+import Sun from "lucide/dist/esm/icons/sun.mjs";
+import Trash2 from "lucide/dist/esm/icons/trash-2.mjs";
+import X from "lucide/dist/esm/icons/x.mjs";
+
+const iconSet = {
+  download: Download,
+  "layout-grid": LayoutGrid,
+  list: List,
+  "log-in": LogIn,
+  "log-out": LogOut,
+  "monitor-cog": MonitorCog,
+  moon: Moon,
+  play: Play,
+  "refresh-cw": RefreshCw,
+  sun: Sun,
+  "trash-2": Trash2,
+  x: X,
+};
 
 const state = {
   user: null,
@@ -30,6 +58,44 @@ const selectAllGallery = document.getElementById("selectAllGallery");
 const selectAllGalleryWrap = document.getElementById("selectAllGalleryWrap");
 
 const galleryPlayers = new Map();
+
+function renderIcons(root = document) {
+  root.querySelectorAll("[data-lucide]").forEach((element) => {
+    const name = element.getAttribute("data-lucide");
+    const iconNode = iconSet[name];
+    if (!iconNode) {
+      return;
+    }
+    const svg = createElement(iconNode, {
+      "data-lucide": name,
+      class: `lucide lucide-${name}`,
+      "aria-hidden": "true",
+      width: 18,
+      height: 18,
+      "stroke-width": 2,
+    });
+    element.replaceWith(svg);
+  });
+}
+
+function iconMarkup(name) {
+  return `<i data-lucide="${name}" aria-hidden="true"></i>`;
+}
+
+function iconButton(label, icon, dataAttr, id, extraClass = "") {
+  return `
+    <button
+      ${dataAttr}="${id}"
+      class="secondary icon-button ${extraClass}"
+      type="button"
+      aria-label="${label}"
+      title="${label}"
+    >
+      ${iconMarkup(icon)}
+      <span class="visually-hidden">${label}</span>
+    </button>
+  `;
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, Object.assign({
@@ -90,14 +156,15 @@ function renderRecordings(recordings) {
       <td>${formatBytes(rec.size)}</td>
       <td>
         <div class="table-actions">
-          <button data-view="${rec.id}" class="secondary">View</button>
-          <button data-download="${rec.id}">Download</button>
-          <button data-delete="${rec.id}" class="secondary">Delete</button>
+          ${iconButton("View", "play", "data-view", rec.id)}
+          ${iconButton("Download", "download", "data-download", rec.id)}
+          ${iconButton("Delete", "trash-2", "data-delete", rec.id, "danger")}
         </div>
       </td>
     `;
     recordingsBody.appendChild(row);
   }
+  renderIcons(recordingsBody);
 }
 
 function renderGallery(recordings) {
@@ -122,13 +189,14 @@ function renderGallery(recordings) {
         <div class="gallery-sub">${rec.display} · ${formatBytes(rec.size)}</div>
       </div>
       <div class="table-actions">
-        <button data-view="${rec.id}" class="secondary">View</button>
-        <button data-download="${rec.id}">Download</button>
-        <button data-delete="${rec.id}" class="secondary">Delete</button>
+        ${iconButton("View", "play", "data-view", rec.id)}
+        ${iconButton("Download", "download", "data-download", rec.id)}
+        ${iconButton("Delete", "trash-2", "data-delete", rec.id, "danger")}
       </div>
     `;
     galleryView.appendChild(card);
   }
+  renderIcons(galleryView);
   initGalleryPlayers();
 }
 
@@ -234,7 +302,14 @@ function applyFilters() {
 
 function updateFilterLabel() {
   if (state.filterDate) {
-    heatmapFilter.innerHTML = `Showing recordings for <strong>${state.filterDate}</strong> · <button id="clearHeatmapFilter" class="secondary">Clear</button>`;
+    heatmapFilter.innerHTML = `
+      Showing recordings for <strong>${state.filterDate}</strong>
+      <button id="clearHeatmapFilter" class="secondary icon-button compact" type="button" aria-label="Clear filter" title="Clear filter">
+        ${iconMarkup("x")}
+        <span class="visually-hidden">Clear filter</span>
+      </button>
+    `;
+    renderIcons(heatmapFilter);
   } else {
     heatmapFilter.textContent = "";
   }
@@ -441,7 +516,10 @@ if (selectAllGallery) {
 }
 
 recordingsBody.addEventListener("click", async (event) => {
-  const target = event.target;
+  const target = event.target.closest("button[data-view], button[data-download], button[data-delete]");
+  if (!target) {
+    return;
+  }
   if (target.dataset.view) {
     window.open(`/view/${target.dataset.view}`, "_blank");
   }
@@ -475,7 +553,10 @@ recordingsBody.addEventListener("change", (event) => {
 });
 
 galleryView.addEventListener("click", async (event) => {
-  const target = event.target;
+  const target = event.target.closest("button[data-view], button[data-download], button[data-delete]");
+  if (!target) {
+    return;
+  }
   if (target.dataset.view) {
     window.open(`/view/${target.dataset.view}`, "_blank");
   }
@@ -513,7 +594,7 @@ galleryView.addEventListener("change", (event) => {
 });
 
 heatmapFilter.addEventListener("click", async (event) => {
-  const target = event.target;
+  const target = event.target.closest("#clearHeatmapFilter");
   if (target && target.id === "clearHeatmapFilter") {
     state.filterDate = null;
     await loadHeatmap();
@@ -555,6 +636,7 @@ async function tryTokenLogin() {
 }
 
 async function bootstrap() {
+  renderIcons();
   initThemeToggle();
   const storedView = localStorage.getItem("ttyrecall-view") || "list";
   state.viewMode = storedView === "gallery" ? "gallery" : "list";
@@ -603,6 +685,10 @@ function updateThemeLabel(theme) {
     return;
   }
   const label = theme === "dark" ? "Theme: Dark" : theme === "light" ? "Theme: Light" : "Theme: System";
-  themeToggle.textContent = label;
+  const icon = theme === "dark" ? "moon" : theme === "light" ? "sun" : "monitor-cog";
+  themeToggle.innerHTML = `${iconMarkup(icon)}<span class="visually-hidden">${label}</span>`;
+  renderIcons(themeToggle);
+  themeToggle.setAttribute("aria-label", label);
+  themeToggle.setAttribute("title", label);
   themeToggle.setAttribute("aria-pressed", theme === "dark");
 }

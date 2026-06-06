@@ -1,4 +1,16 @@
 import { create as createPlayer } from "asciinema-player";
+import createElement from "lucide/dist/esm/createElement.mjs";
+import ArrowLeft from "lucide/dist/esm/icons/arrow-left.mjs";
+import MonitorCog from "lucide/dist/esm/icons/monitor-cog.mjs";
+import Moon from "lucide/dist/esm/icons/moon.mjs";
+import Sun from "lucide/dist/esm/icons/sun.mjs";
+
+const iconSet = {
+  "arrow-left": ArrowLeft,
+  "monitor-cog": MonitorCog,
+  moon: Moon,
+  sun: Sun,
+};
 
 const id = window.location.pathname.split("/").pop();
 const castUrl = `/api/recordings/${id}/cast`;
@@ -9,6 +21,30 @@ const playerContainer = document.getElementById("player");
 const header = document.querySelector("header");
 const themeToggle = document.getElementById("themeToggle");
 
+function renderIcons(root = document) {
+  root.querySelectorAll("[data-lucide]").forEach((element) => {
+    const name = element.getAttribute("data-lucide");
+    const iconNode = iconSet[name];
+    if (!iconNode) {
+      return;
+    }
+    const svg = createElement(iconNode, {
+      "data-lucide": name,
+      class: `lucide lucide-${name}`,
+      "aria-hidden": "true",
+      width: 18,
+      height: 18,
+      "stroke-width": 2,
+    });
+    element.replaceWith(svg);
+  });
+}
+
+function iconMarkup(name) {
+  return `<i data-lucide="${name}" aria-hidden="true"></i>`;
+}
+
+renderIcons();
 initThemeToggle();
 
 downloadLink.href = downloadUrl;
@@ -69,6 +105,10 @@ function updateThemeLabel(theme) {
     return;
   }
   const label = theme === "dark" ? "Theme: Dark" : theme === "light" ? "Theme: Light" : "Theme: System";
-  themeToggle.textContent = label;
+  const icon = theme === "dark" ? "moon" : theme === "light" ? "sun" : "monitor-cog";
+  themeToggle.innerHTML = `${iconMarkup(icon)}<span class="visually-hidden">${label}</span>`;
+  renderIcons(themeToggle);
+  themeToggle.setAttribute("aria-label", label);
+  themeToggle.setAttribute("title", label);
   themeToggle.setAttribute("aria-pressed", theme === "dark");
 }

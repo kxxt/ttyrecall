@@ -9,7 +9,8 @@
     "preview": "astro preview --host 127.0.0.1"
   },
   "dependencies": {
-    "asciinema-player": "^3.15"
+    "asciinema-player": "^3.15",
+    "lucide": "^1.17.0"
   },
   "devDependencies": {
     "astro": "^5.0.0"
