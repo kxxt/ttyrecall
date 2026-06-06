@@ -258,7 +258,6 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: 
         .visible_recordings(visible_rows)
         .iter()
         .map(|recording| {
-            let badge = if recording.compressed { " zst" } else { "" };
             let date = if recording.date.is_empty() {
                 "unknown".to_string()
             } else {
@@ -266,11 +265,11 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: 
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("{} ", recording.display),
+                    format!("{} ", recording.name),
                     Style::default().fg(Color::White),
                 ),
                 Span::styled(
-                    format!("{}{} {}", date, badge, format_bytes(recording.size)),
+                    format!("{} {}", date, format_bytes(recording.size)),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
@@ -319,11 +318,109 @@ fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let block = Block::default()
         .title(format!(" Preview: {} ", app.playback.title))
         .borders(Borders::ALL);
-    let paragraph = Paragraph::new(app.playback.screen_text())
+    let paragraph = Paragraph::new(preview_text(app))
         .block(block)
         .style(Style::default().fg(Color::Rgb(211, 216, 217)))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+fn preview_text(app: &App) -> Text<'static> {
+    let Some(screen) = app.playback.screen() else {
+        return Text::from(app.playback.screen_text());
+    };
+    if !screen_has_renderable_cells(screen) {
+        return Text::from(app.playback.screen_text());
+    }
+
+    let (rows, cols) = screen.size();
+    let mut lines = Vec::with_capacity(rows as usize);
+    for row in 0..rows {
+        lines.push(preview_line(screen, row, cols));
+    }
+    Text::from(lines)
+}
+
+fn preview_line(screen: &vt100::Screen, row: u16, cols: u16) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut pending = String::new();
+    let mut pending_style: Option<Style> = None;
+
+    for col in 0..cols {
+        let Some(cell) = screen.cell(row, col) else {
+            continue;
+        };
+        if cell.is_wide_continuation() {
+            continue;
+        }
+        let style = cell_style(cell);
+        if pending_style != Some(style) {
+            flush_span(&mut spans, &mut pending, pending_style);
+            pending_style = Some(style);
+        }
+        if cell.has_contents() {
+            pending.push_str(&cell.contents());
+        } else {
+            pending.push(' ');
+        }
+    }
+    flush_span(&mut spans, &mut pending, pending_style);
+    Line::from(spans)
+}
+
+fn flush_span(spans: &mut Vec<Span<'static>>, pending: &mut String, style: Option<Style>) {
+    if pending.is_empty() {
+        return;
+    }
+    spans.push(Span::styled(
+        std::mem::take(pending),
+        style.unwrap_or_default(),
+    ));
+}
+
+fn screen_has_renderable_cells(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    for row in 0..rows {
+        for col in 0..cols {
+            if let Some(cell) = screen.cell(row, col) {
+                if cell.has_contents() || cell_style(cell) != Style::default() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn cell_style(cell: &vt100::Cell) -> Style {
+    let mut style = Style::default();
+    if let Some(color) = preview_color(cell.fgcolor()) {
+        style = style.fg(color);
+    }
+    if let Some(color) = preview_color(cell.bgcolor()) {
+        style = style.bg(color);
+    }
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.inverse() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
+}
+
+fn preview_color(color: vt100::Color) -> Option<Color> {
+    match color {
+        vt100::Color::Default => None,
+        vt100::Color::Idx(index) => Some(Color::Indexed(index)),
+        vt100::Color::Rgb(red, green, blue) => Some(Color::Rgb(red, green, blue)),
+    }
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -435,6 +532,20 @@ mod tests {
     fn heat_style_has_empty_and_non_empty_states() {
         assert_eq!(heat_style(0, 10).bg, Some(Color::Rgb(31, 36, 42)));
         assert_eq!(heat_style(10, 10).fg, Some(Color::Rgb(30, 220, 128)));
+    }
+
+    #[test]
+    fn preview_cell_style_preserves_terminal_attrs() {
+        let mut parser = vt100::Parser::new(1, 8, 0);
+        parser.process(b"\x1b[1;31mR\x1b[38;2;1;2;3;48;5;4mG");
+
+        let red = cell_style(parser.screen().cell(0, 0).unwrap());
+        assert_eq!(red.fg, Some(Color::Indexed(1)));
+        assert!(red.add_modifier.contains(Modifier::BOLD));
+
+        let rgb_on_blue = cell_style(parser.screen().cell(0, 1).unwrap());
+        assert_eq!(rgb_on_blue.fg, Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(rgb_on_blue.bg, Some(Color::Indexed(4)));
     }
 
     #[test]

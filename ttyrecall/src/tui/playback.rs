@@ -133,6 +133,13 @@ impl Playback {
         }
     }
 
+    pub(super) fn screen(&self) -> Option<&vt100::Screen> {
+        if self.error.is_some() || self.events.is_empty() {
+            return None;
+        }
+        Some(self.parser.screen())
+    }
+
     fn restart_at(&mut self, now: Instant) {
         self.parser = vt100::Parser::new(self.parser_rows, self.parser_cols, 0);
         self.next_event = 0;
