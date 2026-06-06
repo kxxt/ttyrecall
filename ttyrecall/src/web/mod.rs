@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
+    ffi::OsString,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -17,6 +18,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{Local, NaiveDate};
 use constant_time_eq::constant_time_eq;
+use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
+use log::{error, warn};
 use nix::unistd::{Uid, User};
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -73,6 +76,7 @@ struct Session {
 #[derive(Debug)]
 struct AppState {
     storage_root: PathBuf,
+    recording_index: Arc<StdRwLock<RecordingIndex>>,
     pam_service: String,
     sessions: RwLock<HashMap<String, Session>>,
     session_ttl: Duration,
@@ -104,7 +108,7 @@ struct RecordingsResponse {
     recordings: Vec<RecordingInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct RecordingInfo {
     id: String,
     name: String,
@@ -148,6 +152,272 @@ struct CastCacheEntry {
 #[derive(Debug, Default)]
 struct CastCache {
     entries: HashMap<PathBuf, CastCacheEntry>,
+}
+
+#[derive(Debug, Default)]
+struct RecordingIndex {
+    by_user: HashMap<u32, HashMap<PathBuf, RecordingInfo>>,
+}
+
+impl RecordingIndex {
+    fn clear(&mut self) {
+        self.by_user.clear();
+    }
+
+    fn upsert_path(&mut self, storage_root: &Path, path: &Path) {
+        let Some((uid, rel_path, info)) = indexed_recording(storage_root, path) else {
+            return;
+        };
+
+        self.by_user.entry(uid).or_default().insert(rel_path, info);
+    }
+
+    fn remove_path(&mut self, storage_root: &Path, path: &Path) {
+        let Some((uid, rel_path)) = storage_rel_path(storage_root, path) else {
+            return;
+        };
+
+        if let Some(recordings) = self.by_user.get_mut(&uid) {
+            recordings.remove(&rel_path);
+            if recordings.is_empty() {
+                self.by_user.remove(&uid);
+            }
+        }
+    }
+
+    fn remove_tree(&mut self, storage_root: &Path, path: &Path) {
+        let Some((uid, rel_prefix)) = storage_rel_path(storage_root, path) else {
+            return;
+        };
+
+        if let Some(recordings) = self.by_user.get_mut(&uid) {
+            recordings.retain(|rel_path, _| !rel_path.starts_with(&rel_prefix));
+            if recordings.is_empty() {
+                self.by_user.remove(&uid);
+            }
+        }
+    }
+
+    fn list_for_user(&self, uid: u32) -> Vec<RecordingInfo> {
+        let Some(recordings) = self.by_user.get(&uid) else {
+            return Vec::new();
+        };
+
+        let mut recordings: Vec<_> = recordings.values().cloned().collect();
+        recordings.sort_by(|a, b| b.display.cmp(&a.display));
+        recordings
+    }
+
+    fn heatmap_for_user(&self, uid: u32) -> Vec<HeatmapDay> {
+        let Some(recordings) = self.by_user.get(&uid) else {
+            return Vec::new();
+        };
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for recording in recordings.values() {
+            if recording.date.is_empty() {
+                continue;
+            }
+            *counts.entry(recording.date.clone()).or_insert(0) += 1;
+        }
+
+        let mut days: Vec<_> = counts
+            .into_iter()
+            .map(|(date, count)| HeatmapDay { date, count })
+            .collect();
+        days.sort_by(|a, b| a.date.cmp(&b.date));
+        days
+    }
+}
+
+#[derive(Debug)]
+struct RecordingWatcher {
+    storage_root: PathBuf,
+    index: Arc<StdRwLock<RecordingIndex>>,
+    inotify: Inotify,
+    watch_paths: HashMap<PathBuf, WatchDescriptor>,
+    watched_dirs: HashMap<WatchDescriptor, PathBuf>,
+}
+
+impl RecordingWatcher {
+    fn new(storage_root: PathBuf, index: Arc<StdRwLock<RecordingIndex>>) -> std::io::Result<Self> {
+        Ok(Self {
+            storage_root,
+            index,
+            inotify: Inotify::init()?,
+            watch_paths: HashMap::new(),
+            watched_dirs: HashMap::new(),
+        })
+    }
+
+    fn rebuild(&mut self) -> std::io::Result<()> {
+        self.inotify = Inotify::init()?;
+        self.watch_paths.clear();
+        self.watched_dirs.clear();
+        self.index.write().unwrap().clear();
+        self.scan_dir_recursive(self.storage_root.clone())
+    }
+
+    fn run(&mut self) -> std::io::Result<()> {
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let events = self.inotify.read_events_blocking(&mut buffer)?;
+            let events: Vec<_> = events.map(|event| event.to_owned()).collect();
+            for event in events {
+                self.handle_event(event)?;
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: inotify::Event<OsString>) -> std::io::Result<()> {
+        if event.mask.contains(EventMask::Q_OVERFLOW) {
+            warn!("recording watcher queue overflowed; rebuilding index");
+            return self.rebuild();
+        }
+
+        if event.mask.contains(EventMask::IGNORED) {
+            if let Some(path) = self.watched_dirs.remove(&event.wd) {
+                self.watch_paths.remove(&path);
+            }
+            return Ok(());
+        }
+
+        if event.mask.contains(EventMask::UNMOUNT) {
+            warn!("recording storage was unmounted; rebuilding index");
+            return self.rebuild();
+        }
+
+        let Some(parent) = self.watched_dirs.get(&event.wd).cloned() else {
+            return Ok(());
+        };
+
+        if event.mask.contains(EventMask::MOVE_SELF) {
+            return self.rebuild();
+        }
+
+        let Some(name) = event.name else {
+            return Ok(());
+        };
+        let path = parent.join(name);
+
+        if event.mask.contains(EventMask::ISDIR) {
+            return self.handle_dir_event(path, event.mask);
+        }
+
+        self.handle_file_event(path, event.mask);
+        Ok(())
+    }
+
+    fn handle_dir_event(&mut self, path: PathBuf, mask: EventMask) -> std::io::Result<()> {
+        if mask.intersects(EventMask::MOVED_FROM | EventMask::MOVED_TO) {
+            return self.rebuild();
+        }
+
+        if mask.contains(EventMask::CREATE) {
+            return match self.scan_dir_recursive(path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err),
+            };
+        }
+
+        if mask.intersects(EventMask::DELETE | EventMask::DELETE_SELF) {
+            self.index
+                .write()
+                .unwrap()
+                .remove_tree(&self.storage_root, &path);
+        }
+
+        Ok(())
+    }
+
+    fn handle_file_event(&mut self, path: PathBuf, mask: EventMask) {
+        if mask.intersects(
+            EventMask::CREATE | EventMask::MOVED_TO | EventMask::CLOSE_WRITE | EventMask::ATTRIB,
+        ) {
+            self.index
+                .write()
+                .unwrap()
+                .upsert_path(&self.storage_root, &path);
+        }
+
+        if mask.intersects(EventMask::DELETE | EventMask::MOVED_FROM) {
+            self.index
+                .write()
+                .unwrap()
+                .remove_path(&self.storage_root, &path);
+        }
+    }
+
+    fn scan_dir_recursive(&mut self, dir: PathBuf) -> std::io::Result<()> {
+        self.watch_dir(&dir)?;
+
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                warn!(
+                    "failed to read recording directory {}: {err}",
+                    dir.display()
+                );
+                return Ok(());
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    warn!("failed to read recording directory entry: {err}");
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => {
+                    warn!(
+                        "failed to read recording entry type {}: {err}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
+
+            if file_type.is_dir() {
+                self.scan_dir_recursive(path)?;
+            } else if file_type.is_file() {
+                self.index
+                    .write()
+                    .unwrap()
+                    .upsert_path(&self.storage_root, &path);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn watch_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+        if self.watch_paths.contains_key(dir) {
+            return Ok(());
+        }
+
+        let watch = self.inotify.watches().add(
+            dir,
+            WatchMask::CREATE
+                | WatchMask::DELETE
+                | WatchMask::MOVED_FROM
+                | WatchMask::MOVED_TO
+                | WatchMask::CLOSE_WRITE
+                | WatchMask::ATTRIB
+                | WatchMask::DELETE_SELF
+                | WatchMask::MOVE_SELF
+                | WatchMask::ONLYDIR,
+        )?;
+
+        self.watch_paths.insert(dir.to_path_buf(), watch.clone());
+        self.watched_dirs.insert(watch, dir.to_path_buf());
+        Ok(())
+    }
 }
 
 impl CastCache {
@@ -235,9 +505,12 @@ pub async fn run(
             Some(token)
         }
     };
+    let recording_index = Arc::new(StdRwLock::new(RecordingIndex::default()));
+    spawn_recording_watcher(config.root.clone(), recording_index.clone())?;
 
     let state = Arc::new(AppState {
         storage_root: config.root.clone(),
+        recording_index,
         pam_service: config.pam_service.clone(),
         sessions: RwLock::new(HashMap::new()),
         session_ttl: config.session_ttl,
@@ -449,7 +722,7 @@ async fn list_recordings(
         Err(status) => return (status, "Not authenticated").into_response(),
     };
 
-    let recordings = list_recordings_for_user(&state.storage_root, session.uid);
+    let recordings = list_recordings_for_user(&state.recording_index, session.uid);
     Json(RecordingsResponse { recordings }).into_response()
 }
 
@@ -467,6 +740,11 @@ async fn delete_recordings(
     for id in payload.ids {
         if let Some(path) = resolve_recording_path(&state.storage_root, session.uid, &id) {
             if std::fs::remove_file(&path).is_ok() {
+                state
+                    .recording_index
+                    .write()
+                    .unwrap()
+                    .remove_path(&state.storage_root, &path);
                 deleted += 1;
             }
         }
@@ -553,7 +831,7 @@ async fn heatmap(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl
         Err(status) => return (status, "Not authenticated").into_response(),
     };
 
-    let counts = heatmap_for_user(&state.storage_root, session.uid);
+    let counts = heatmap_for_user(&state.recording_index, session.uid);
     let today = Local::now().date_naive();
     let response = HeatmapResponse {
         today: today.format("%Y-%m-%d").to_string(),
@@ -566,6 +844,22 @@ fn new_session_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn spawn_recording_watcher(
+    storage_root: PathBuf,
+    index: Arc<StdRwLock<RecordingIndex>>,
+) -> color_eyre::Result<()> {
+    let mut watcher = RecordingWatcher::new(storage_root, index)?;
+    watcher.rebuild()?;
+    std::thread::Builder::new()
+        .name("ttyrecall-inotify".to_string())
+        .spawn(move || {
+            if let Err(err) = watcher.run() {
+                error!("recording watcher stopped: {err}");
+            }
+        })?;
+    Ok(())
 }
 
 fn session_token(headers: &HeaderMap) -> Option<String> {
@@ -601,38 +895,11 @@ async fn require_session(state: &AppState, headers: &HeaderMap) -> Result<Sessio
     Err(StatusCode::UNAUTHORIZED)
 }
 
-fn list_recordings_for_user(storage_root: &Path, uid: u32) -> Vec<RecordingInfo> {
-    let user_root = storage_root.join(uid.to_string());
-    let mut files = Vec::new();
-    collect_files(&user_root, &mut files);
-
-    let mut recordings = Vec::new();
-    for path in files {
-        if let Some(info) = recording_info(&user_root, &path) {
-            recordings.push(info);
-        }
-    }
-    recordings.sort_by(|a, b| b.display.cmp(&a.display));
-    recordings
-}
-
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        if metadata.is_dir() {
-            collect_files(&path, out);
-        } else if metadata.is_file() {
-            out.push(path);
-        }
-    }
+fn list_recordings_for_user(
+    index: &Arc<StdRwLock<RecordingIndex>>,
+    uid: u32,
+) -> Vec<RecordingInfo> {
+    index.read().unwrap().list_for_user(uid)
 }
 
 fn recording_info(user_root: &Path, path: &Path) -> Option<RecordingInfo> {
@@ -663,6 +930,29 @@ fn recording_info(user_root: &Path, path: &Path) -> Option<RecordingInfo> {
 
 fn is_recording_file_name(file_name: &str) -> bool {
     file_name.ends_with(".cast") || file_name.ends_with(".cast.zst")
+}
+
+fn indexed_recording(storage_root: &Path, path: &Path) -> Option<(u32, PathBuf, RecordingInfo)> {
+    let (uid, rel_path) = storage_rel_path(storage_root, path)?;
+    let user_root = storage_root.join(uid.to_string());
+    let info = recording_info(&user_root, path)?;
+    Some((uid, rel_path, info))
+}
+
+fn storage_rel_path(storage_root: &Path, path: &Path) -> Option<(u32, PathBuf)> {
+    let rel = path.strip_prefix(storage_root).ok()?;
+    let mut components = rel.components();
+    let uid: u32 = components
+        .next()?
+        .as_os_str()
+        .to_string_lossy()
+        .parse()
+        .ok()?;
+    let remainder = components.as_path();
+    if remainder.as_os_str().is_empty() {
+        return None;
+    }
+    Some((uid, remainder.to_path_buf()))
 }
 
 fn format_display(rel: &Path) -> Option<String> {
@@ -747,34 +1037,8 @@ async fn get_cast_bytes(
     Ok(bytes)
 }
 
-fn heatmap_for_user(storage_root: &Path, uid: u32) -> Vec<HeatmapDay> {
-    let user_root = storage_root.join(uid.to_string());
-    let mut files = Vec::new();
-    collect_files(&user_root, &mut files);
-
-    let mut counts: HashMap<NaiveDate, usize> = HashMap::new();
-    for path in files {
-        let file_name = match path.file_name().and_then(|name| name.to_str()) {
-            Some(name) => name,
-            None => continue,
-        };
-        if !is_recording_file_name(file_name) {
-            continue;
-        }
-        if let Some(date) = date_from_path(&user_root, &path) {
-            *counts.entry(date).or_insert(0) += 1;
-        }
-    }
-
-    let mut days: Vec<_> = counts
-        .into_iter()
-        .map(|(date, count)| HeatmapDay {
-            date: date.format("%Y-%m-%d").to_string(),
-            count,
-        })
-        .collect();
-    days.sort_by(|a, b| a.date.cmp(&b.date));
-    days
+fn heatmap_for_user(index: &Arc<StdRwLock<RecordingIndex>>, uid: u32) -> Vec<HeatmapDay> {
+    index.read().unwrap().heatmap_for_user(uid)
 }
 
 fn date_from_path(user_root: &Path, path: &Path) -> Option<NaiveDate> {
