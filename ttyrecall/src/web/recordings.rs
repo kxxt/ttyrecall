@@ -28,13 +28,13 @@ struct RecordingsResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct RecordingInfo {
-    id: String,
-    name: String,
-    display: String,
-    date: String,
-    size: u64,
-    compressed: bool,
+pub(crate) struct RecordingInfo {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) display: String,
+    pub(crate) date: String,
+    pub(crate) size: u64,
+    pub(crate) compressed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,14 +53,14 @@ struct HeatmapResponse {
     counts: Vec<HeatmapDay>,
 }
 
-#[derive(Debug, Serialize)]
-pub(super) struct HeatmapDay {
-    date: String,
-    count: usize,
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HeatmapDay {
+    pub(crate) date: String,
+    pub(crate) count: usize,
 }
 
 #[derive(Debug, Default)]
-pub(super) struct RecordingIndex {
+pub(crate) struct RecordingIndex {
     by_user: HashMap<u32, HashMap<PathBuf, RecordingInfo>>,
 }
 
@@ -265,7 +265,7 @@ pub(super) async fn heatmap(
     Json(response).into_response()
 }
 
-fn list_recordings_for_user(
+pub(crate) fn list_recordings_for_user(
     index: &Arc<StdRwLock<RecordingIndex>>,
     uid: u32,
 ) -> Vec<RecordingInfo> {
@@ -345,7 +345,7 @@ fn format_display(rel: &Path) -> Option<String> {
     Some(format!("{}-{}-{} {}", year, month, day, time))
 }
 
-fn resolve_recording_path(storage_root: &Path, uid: u32, id: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_recording_path(storage_root: &Path, uid: u32, id: &str) -> Option<PathBuf> {
     let decoded = URL_SAFE_NO_PAD.decode(id).ok()?;
     let rel = String::from_utf8(decoded).ok()?;
     let rel_path = PathBuf::from(rel);
@@ -366,7 +366,7 @@ fn resolve_recording_path(storage_root: &Path, uid: u32, id: &str) -> Option<Pat
     Some(canonical)
 }
 
-fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
+pub(crate) fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     let bytes = std::fs::read(path)?;
     if path.extension().and_then(|s| s.to_str()) == Some("zst") {
         let decoded = zstd::stream::decode_all(bytes.as_slice())
@@ -410,7 +410,10 @@ async fn get_cast_bytes(
     Ok(bytes)
 }
 
-fn heatmap_for_user(index: &Arc<StdRwLock<RecordingIndex>>, uid: u32) -> Vec<HeatmapDay> {
+pub(crate) fn heatmap_for_user(
+    index: &Arc<StdRwLock<RecordingIndex>>,
+    uid: u32,
+) -> Vec<HeatmapDay> {
     index.read().unwrap().heatmap_for_user(uid)
 }
 

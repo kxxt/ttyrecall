@@ -26,7 +26,7 @@ struct WebConfigFile {
 #[derive(Debug, Clone)]
 pub(super) struct WebConfig {
     pub(super) bind: String,
-    pub(super) root: PathBuf,
+    pub(crate) root: PathBuf,
     pub(super) pam_service: String,
     pub(super) session_ttl: Duration,
     pub(super) frontend_root: PathBuf,
@@ -41,7 +41,7 @@ pub(super) struct SingleUser {
     pub(super) username: String,
 }
 
-pub(super) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::Result<WebConfig> {
+pub(crate) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::Result<WebConfig> {
     let default_bind = "127.0.0.1:8450".to_string();
     let default_storage = "/var/lib/ttyrecall".to_string();
     let default_pam = "login".to_string();
@@ -82,7 +82,7 @@ pub(super) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::
     })
 }
 
-pub(super) fn resolve_single_user(
+pub(crate) fn resolve_single_user(
     mode: &WebMode,
     config: &WebConfig,
 ) -> color_eyre::Result<Option<SingleUser>> {

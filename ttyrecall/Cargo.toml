@@ -33,6 +33,9 @@ pam = "0.8.0"
 tower-http = { version = "0.5.2", features = ["fs"] }
 constant_time_eq = "0.3.0"
 inotify = "0.11.0"
+ratatui = "0.29.0"
+crossterm = "0.28.1"
+vt100 = "0.15.2"
 
 [[bin]]
 name = "ttyrecall"

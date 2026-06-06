@@ -10,6 +10,7 @@ mod daemon;
 mod manager;
 mod player;
 mod session;
+mod tui;
 mod web;
 
 #[tokio::main(worker_threads = 2)]
@@ -36,6 +37,9 @@ async fn main() -> color_eyre::Result<()> {
         Command::Web { open, config } => {
             let mode = web::current_user_mode()?;
             web::run(mode, config, open).await?;
+        }
+        Command::Browse { config } => {
+            tui::run(config)?;
         }
         _ => {
             bail!("Sorry, this feature hasn't been implemented.");

@@ -18,6 +18,36 @@ mod state;
 mod watcher;
 
 pub use config::{current_user_mode, WebMode};
+pub(crate) use recordings::{
+    heatmap_for_user, list_recordings_for_user, read_cast_bytes, resolve_recording_path,
+    HeatmapDay, RecordingIndex, RecordingInfo,
+};
+
+pub(crate) struct BrowseContext {
+    pub(crate) storage_root: PathBuf,
+    pub(crate) uid: u32,
+    pub(crate) username: String,
+    pub(crate) recording_index: Arc<StdRwLock<RecordingIndex>>,
+}
+
+pub(crate) fn browse_context(config_path: Option<PathBuf>) -> color_eyre::Result<BrowseContext> {
+    let mode = current_user_mode()?;
+    let config = config::load_config(&mode, config_path)?;
+    let single_user = config::resolve_single_user(&mode, &config)?;
+    let Some(single_user) = single_user else {
+        unreachable!("current_user_mode always resolves to a single-user context");
+    };
+
+    let recording_index = Arc::new(StdRwLock::new(RecordingIndex::default()));
+    watcher::spawn_recording_watcher(config.root.clone(), recording_index.clone())?;
+
+    Ok(BrowseContext {
+        storage_root: config.root,
+        uid: single_user.uid,
+        username: single_user.username,
+        recording_index,
+    })
+}
 
 pub async fn run(
     mode: WebMode,

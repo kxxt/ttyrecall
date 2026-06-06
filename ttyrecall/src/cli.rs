@@ -28,7 +28,13 @@ pub enum Command {
         files: Vec<PathBuf>,
     },
     #[clap(about = "Browse recorded file(s)")]
-    Browse {},
+    Browse {
+        #[clap(
+            long,
+            help = "Path to config file, $XDG_CONFIG_HOME/ttyrecall/web.toml by default"
+        )]
+        config: Option<PathBuf>,
+    },
     // We want to support two kinds of web interfaces,
     // One that could be configured by sysadmin as a service to be used by all users,
     // and one that a user could launch to view their own archive.
