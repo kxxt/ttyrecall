@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::catalog::{self, HeatmapDay, RecordingIndex, RecordingInfo};
+use crate::search::{search_recordings, RipgrepSearchConfig, SearchResult};
 
 use super::{playback::Playback, REFRESH_INTERVAL};
 
@@ -32,6 +33,11 @@ pub(super) struct App {
     pub(super) status: String,
     pub(super) delete_confirmation: Option<DeleteConfirmation>,
     confirm_deletes: bool,
+    pub(super) search_enabled: bool,
+    pub(super) search_config: RipgrepSearchConfig,
+    pub(super) search_mode: SearchMode,
+    pub(super) search_query: String,
+    search_results: Vec<SearchResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,12 +46,21 @@ pub(super) struct DeleteConfirmation {
     pub(super) dont_ask_again: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SearchMode {
+    Inactive,
+    Editing,
+    Results,
+}
+
 impl App {
     pub(super) fn new(
         storage_root: PathBuf,
         uid: u32,
         username: String,
         recording_index: Arc<StdRwLock<RecordingIndex>>,
+        search_enabled: bool,
+        search_config: RipgrepSearchConfig,
     ) -> Self {
         Self {
             storage_root,
@@ -68,6 +83,11 @@ impl App {
             status: String::new(),
             delete_confirmation: None,
             confirm_deletes: true,
+            search_enabled,
+            search_config,
+            search_mode: SearchMode::Inactive,
+            search_query: String::new(),
+            search_results: Vec::new(),
         }
     }
 
@@ -76,6 +96,12 @@ impl App {
         self.all_recordings = index.list_for_user(self.uid);
         self.heatmap = index.heatmap_for_user(self.uid);
         drop(index);
+
+        if self.search_mode != SearchMode::Inactive {
+            self.last_refresh = Instant::now();
+            self.load_selected_if_needed();
+            return;
+        }
 
         self.apply_filter();
         self.clamp_selection();
@@ -139,6 +165,87 @@ impl App {
         self.clamp_selection();
         self.status = "Showing all recordings".to_string();
         self.load_selected_if_needed();
+    }
+
+    pub(super) fn start_search(&mut self) {
+        if !self.search_enabled {
+            self.status = "Search is disabled".to_string();
+            return;
+        }
+        self.search_mode = SearchMode::Editing;
+        self.search_query.clear();
+        self.status = "Search recordings".to_string();
+    }
+
+    pub(super) fn cancel_search(&mut self) {
+        if self.search_mode == SearchMode::Inactive {
+            return;
+        }
+        self.search_mode = SearchMode::Inactive;
+        self.search_query.clear();
+        self.search_results.clear();
+        self.selected = 0;
+        self.list_offset = 0;
+        self.selected_id = None;
+        self.apply_filter();
+        self.clamp_selection();
+        self.status = "Search cleared".to_string();
+        self.load_selected_if_needed();
+    }
+
+    pub(super) fn push_search_char(&mut self, ch: char) {
+        if self.search_mode == SearchMode::Editing && !ch.is_control() {
+            self.search_query.push(ch);
+        }
+    }
+
+    pub(super) fn pop_search_char(&mut self) {
+        if self.search_mode == SearchMode::Editing {
+            self.search_query.pop();
+        }
+    }
+
+    pub(super) fn run_search(&mut self) {
+        if !self.search_enabled || self.search_mode != SearchMode::Editing {
+            return;
+        }
+        let query = self.search_query.trim().to_string();
+        if query.is_empty() {
+            self.status = "Search query is empty".to_string();
+            return;
+        }
+
+        match search_recordings(&self.storage_root, self.uid, &query, &self.search_config) {
+            Ok(results) => {
+                self.search_results = results;
+                self.recordings = self
+                    .search_results
+                    .iter()
+                    .map(|result| RecordingInfo {
+                        id: result.recording_id.clone(),
+                        name: result.name.clone(),
+                        display: result.display.clone(),
+                        date: result.date.clone(),
+                        size: result.size,
+                        compressed: result.compressed,
+                    })
+                    .collect();
+                self.search_mode = SearchMode::Results;
+                self.selected = 0;
+                self.list_offset = 0;
+                self.selected_id = None;
+                self.clamp_selection();
+                self.status = format!(
+                    "{} search match{} for {query}",
+                    self.recordings.len(),
+                    if self.recordings.len() == 1 { "" } else { "es" }
+                );
+                self.load_selected_if_needed();
+            }
+            Err(err) => {
+                self.status = format!("Search failed: {err}");
+            }
+        }
     }
 
     pub(super) fn reload_selected(&mut self) {
@@ -282,10 +389,22 @@ impl App {
             return;
         };
 
-        if self.selected_id.as_deref() == Some(recording.id.as_str()) {
+        let start_at = self
+            .search_results
+            .get(self.selected)
+            .filter(|_| self.search_mode == SearchMode::Results)
+            .map(|result| result.timestamp)
+            .unwrap_or(0.0);
+        let selection_key = if self.search_mode == SearchMode::Results {
+            format!("{}@{:.3}", recording.id, start_at)
+        } else {
+            recording.id.clone()
+        };
+
+        if self.selected_id.as_deref() == Some(selection_key.as_str()) {
             return;
         }
-        self.selected_id = Some(recording.id.clone());
+        self.selected_id = Some(selection_key);
 
         let Some(path) =
             catalog::resolve_recording_path(&self.storage_root, self.uid, &recording.id)
@@ -298,15 +417,27 @@ impl App {
             return;
         };
 
-        match Playback::load(path, recording.display.clone()) {
+        match Playback::load_at(path, recording.display.clone(), start_at) {
             Ok(playback) => {
                 self.playback = playback;
-                self.status = format!("Playing {}", recording.display);
+                if start_at > 0.0 {
+                    self.status = format!("Playing {} at {:.2}s", recording.display, start_at);
+                } else {
+                    self.status = format!("Playing {}", recording.display);
+                }
             }
             Err(err) => {
                 self.playback = Playback::error(recording.display.clone(), err.to_string());
                 self.status = format!("Failed to load {}", recording.display);
             }
+        }
+    }
+
+    pub(super) fn search_result_at(&self, index: usize) -> Option<&SearchResult> {
+        if self.search_mode == SearchMode::Results {
+            self.search_results.get(index)
+        } else {
+            None
         }
     }
 
@@ -378,6 +509,11 @@ mod tests {
             1000,
             "user".to_string(),
             Arc::new(StdRwLock::new(RecordingIndex::default())),
+            false,
+            RipgrepSearchConfig {
+                ripgrep_path: "rg".to_string(),
+                max_results: 50,
+            },
         );
         app.all_recordings = recordings;
         app.apply_filter();
@@ -475,7 +611,17 @@ mod tests {
         let mut index = RecordingIndex::default();
         index.upsert_path(&root, &recording);
         let index = Arc::new(StdRwLock::new(index));
-        let mut app = App::new(root.clone(), 1000, "user".to_string(), index.clone());
+        let mut app = App::new(
+            root.clone(),
+            1000,
+            "user".to_string(),
+            index.clone(),
+            false,
+            RipgrepSearchConfig {
+                ripgrep_path: "rg".to_string(),
+                max_results: 50,
+            },
+        );
         app.refresh();
 
         app.request_delete_selected();
@@ -508,6 +654,11 @@ mod tests {
             1000,
             "user".to_string(),
             Arc::new(StdRwLock::new(index)),
+            false,
+            RipgrepSearchConfig {
+                ripgrep_path: "rg".to_string(),
+                max_results: 50,
+            },
         );
         app.refresh();
 

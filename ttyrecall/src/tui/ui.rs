@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, HEATMAP_TOTAL_ROWS, HEATMAP_TOTAL_WEEKS};
+use super::app::{App, SearchMode, HEATMAP_TOTAL_ROWS, HEATMAP_TOTAL_WEEKS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClickTarget {
@@ -258,13 +258,15 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: 
     let items: Vec<ListItem> = app
         .visible_recordings(visible_rows)
         .iter()
-        .map(|recording| {
+        .enumerate()
+        .map(|(row_offset, recording)| {
             let date = if recording.date.is_empty() {
                 "unknown".to_string()
             } else {
                 recording.date.clone()
             };
-            ListItem::new(Line::from(vec![
+            let result = app.search_result_at(visible_start + row_offset);
+            let mut spans = vec![
                 Span::styled(
                     format!("{} ", recording.name),
                     Style::default().fg(Color::White),
@@ -273,7 +275,18 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: 
                     format!("{} {}", date, format_bytes(recording.size)),
                     Style::default().fg(Color::DarkGray),
                 ),
-            ]))
+            ];
+            if let Some(result) = result {
+                spans.push(Span::styled(
+                    format!(" @{:.2}s ", result.timestamp),
+                    Style::default().fg(Color::Rgb(216, 199, 155)),
+                ));
+                spans.push(Span::styled(
+                    result.text.clone(),
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -282,9 +295,13 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: 
         state.select(Some(app.selected - visible_start));
     }
 
-    let title = match app.date_filter.as_deref() {
-        Some(date) => format!(" Recordings ({}) | {date} ", app.recordings.len()),
-        None => format!(" Recordings ({}) ", app.recordings.len()),
+    let title = match app.search_mode {
+        SearchMode::Editing => format!(" Search: {} ", app.search_query),
+        SearchMode::Results => format!(" Search Results ({}) ", app.recordings.len()),
+        SearchMode::Inactive => match app.date_filter.as_deref() {
+            Some(date) => format!(" Recordings ({}) | {date} ", app.recordings.len()),
+            None => format!(" Recordings ({}) ", app.recordings.len()),
+        },
     };
     let list = List::new(items)
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -425,8 +442,11 @@ fn preview_color(color: vt100::Color) -> Option<Color> {
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let controls =
-        " q quit  d delete  c clear filter  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll ";
+    let controls = if app.search_enabled {
+        " q quit  / search  esc clear search  d delete  c clear filter  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll "
+    } else {
+        " q quit  d delete  c clear filter  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll "
+    };
     let status = if app.status.is_empty() {
         controls.to_string()
     } else {

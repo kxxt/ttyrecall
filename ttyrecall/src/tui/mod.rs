@@ -28,6 +28,8 @@ pub(crate) fn run(config_path: Option<PathBuf>) -> color_eyre::Result<()> {
         context.uid,
         context.username,
         context.recording_index,
+        context.search_enabled,
+        context.search,
     );
     app.refresh();
 
@@ -84,6 +86,8 @@ fn run_loop(
                     }
                     let action = if app.has_pending_delete_confirmation() {
                         delete_confirmation_action_from_key(key)
+                    } else if app.search_mode == app::SearchMode::Editing {
+                        search_action_from_key(key)
                     } else {
                         action_from_key(key)
                     };
@@ -117,6 +121,11 @@ enum KeyAction {
     ToggleDeleteDontAskAgain,
     Refresh,
     ClearDateFilter,
+    StartSearch,
+    SearchChar(char),
+    SearchBackspace,
+    SubmitSearch,
+    CancelSearch,
     ResizeMainSplit(i16),
     ResizeHeatmapSplit(i16),
     ScrollHeatmapWeeks(i16),
@@ -135,7 +144,8 @@ fn action_from_key(key: KeyEvent) -> Option<KeyAction> {
     }
 
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => Some(KeyAction::Quit),
+        KeyCode::Char('q') => Some(KeyAction::Quit),
+        KeyCode::Esc => Some(KeyAction::CancelSearch),
         KeyCode::Char('j') | KeyCode::Down => Some(KeyAction::SelectNext),
         KeyCode::Char('k') | KeyCode::Up => Some(KeyAction::SelectPrev),
         KeyCode::Left => Some(KeyAction::ScrollHeatmapWeeks(1)),
@@ -148,6 +158,17 @@ fn action_from_key(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Char('d') | KeyCode::Delete => Some(KeyAction::DeleteSelected),
         KeyCode::Char('r') => Some(KeyAction::Refresh),
         KeyCode::Char('c') => Some(KeyAction::ClearDateFilter),
+        KeyCode::Char('/') => Some(KeyAction::StartSearch),
+        _ => None,
+    }
+}
+
+fn search_action_from_key(key: KeyEvent) -> Option<KeyAction> {
+    match key.code {
+        KeyCode::Esc => Some(KeyAction::CancelSearch),
+        KeyCode::Enter => Some(KeyAction::SubmitSearch),
+        KeyCode::Backspace => Some(KeyAction::SearchBackspace),
+        KeyCode::Char(ch) => Some(KeyAction::SearchChar(ch)),
         _ => None,
     }
 }
@@ -175,6 +196,11 @@ fn apply_key_action(action: KeyAction, app: &mut App) -> bool {
         KeyAction::ToggleDeleteDontAskAgain => app.toggle_delete_dont_ask_again(),
         KeyAction::Refresh => app.refresh(),
         KeyAction::ClearDateFilter => app.clear_date_filter(),
+        KeyAction::StartSearch => app.start_search(),
+        KeyAction::SearchChar(ch) => app.push_search_char(ch),
+        KeyAction::SearchBackspace => app.pop_search_char(),
+        KeyAction::SubmitSearch => app.run_search(),
+        KeyAction::CancelSearch => app.cancel_search(),
         KeyAction::ResizeMainSplit(delta) => app.resize_main_split(delta),
         KeyAction::ResizeHeatmapSplit(delta) => app.resize_heatmap_rows(delta),
         KeyAction::ScrollHeatmapWeeks(delta) => app.scroll_heatmap_weeks(delta),
@@ -322,6 +348,26 @@ mod tests {
         assert_eq!(
             action_from_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
             Some(KeyAction::ClearDateFilter)
+        );
+    }
+
+    #[test]
+    fn slash_starts_search_and_esc_clears_it() {
+        assert_eq!(
+            action_from_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+            Some(KeyAction::StartSearch)
+        );
+        assert_eq!(
+            action_from_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(KeyAction::CancelSearch)
+        );
+        assert_eq!(
+            search_action_from_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            Some(KeyAction::SearchChar('n'))
+        );
+        assert_eq!(
+            search_action_from_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(KeyAction::SubmitSearch)
         );
     }
 

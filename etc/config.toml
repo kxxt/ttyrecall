@@ -52,5 +52,14 @@ session_ttl_minutes = 60
 # single_user_uid = 1000
 # single_user_username = "username"
 
+# Search config
+[search]
+
+# Enables on-demand full-text search in the Web UI and TUI.
+# Search uses ripgrep with zstd support (`rg -z`) and does not maintain an index.
+enabled = true
+ripgrep_path = "rg"
+max_results = 50
+
 # TUI config
 [tui]

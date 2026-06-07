@@ -9,6 +9,7 @@ import MonitorCog from "lucide/dist/esm/icons/monitor-cog.mjs";
 import Moon from "lucide/dist/esm/icons/moon.mjs";
 import Play from "lucide/dist/esm/icons/play.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
+import Search from "lucide/dist/esm/icons/search.mjs";
 import Sun from "lucide/dist/esm/icons/sun.mjs";
 import Trash2 from "lucide/dist/esm/icons/trash-2.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
@@ -23,6 +24,7 @@ const iconSet = {
   moon: Moon,
   play: Play,
   "refresh-cw": RefreshCw,
+  search: Search,
   sun: Sun,
   "trash-2": Trash2,
   x: X,
@@ -41,6 +43,9 @@ const state = {
   hasMore: true,
   loadingRecordings: false,
   recordingsRequestId: 0,
+  searchEnabled: false,
+  searchResults: [],
+  searchRequestId: 0,
 };
 
 const loginPanel = document.getElementById("loginPanel");
@@ -65,6 +70,12 @@ const selectAllGallery = document.getElementById("selectAllGallery");
 const selectAllGalleryWrap = document.getElementById("selectAllGalleryWrap");
 const loadMoreSentinel = document.getElementById("loadMoreSentinel");
 const loadState = document.getElementById("loadState");
+const searchCard = document.getElementById("searchCard");
+const searchForm = document.getElementById("searchForm");
+const searchInput = document.getElementById("searchInput");
+const searchButton = document.getElementById("searchButton");
+const searchStatus = document.getElementById("searchStatus");
+const searchResults = document.getElementById("searchResults");
 
 const galleryPlayers = new Map();
 let galleryPreviewObserver = null;
@@ -155,6 +166,21 @@ function formatBytes(bytes) {
     idx += 1;
   }
   return `${value.toFixed(value < 10 && idx > 0 ? 1 : 0)} ${units[idx]}`;
+}
+
+function formatTimestamp(seconds) {
+  const total = Math.max(0, Math.round(seconds || 0));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function renderRecordings(recordings, { append = false } = {}) {
@@ -400,6 +426,79 @@ function updateLoadState() {
   loadState.classList.toggle("hidden", state.total <= RECORDINGS_PAGE_SIZE && !state.hasMore);
 }
 
+function updateSearchVisibility() {
+  if (!searchCard) {
+    return;
+  }
+  searchCard.classList.toggle("hidden", !state.searchEnabled);
+}
+
+function renderSearchResults() {
+  if (!searchResults || !searchStatus) {
+    return;
+  }
+  searchResults.innerHTML = "";
+  if (!state.searchEnabled) {
+    searchStatus.textContent = "";
+    return;
+  }
+  if (!state.searchResults.length) {
+    return;
+  }
+  for (const result of state.searchResults) {
+    const item = document.createElement("button");
+    item.className = "search-result";
+    item.type = "button";
+    item.dataset.view = result.recording_id;
+    item.dataset.timestamp = String(result.timestamp || 0);
+    item.innerHTML = `
+      <span class="search-result-title">${escapeHtml(result.display)} · ${formatTimestamp(result.timestamp)}</span>
+      <span class="search-result-meta">${escapeHtml(result.name)} ${result.compressed ? '<span class="badge">zst</span>' : ''}</span>
+      <span class="search-result-text">${escapeHtml(result.text)}</span>
+    `;
+    searchResults.appendChild(item);
+  }
+}
+
+async function runSearch() {
+  if (!state.searchEnabled || !searchInput || !searchStatus || !searchButton) {
+    return;
+  }
+  const query = searchInput.value.trim();
+  state.searchResults = [];
+  renderSearchResults();
+  if (!query) {
+    searchStatus.textContent = "";
+    return;
+  }
+
+  const requestId = state.searchRequestId + 1;
+  state.searchRequestId = requestId;
+  searchButton.disabled = true;
+  searchStatus.textContent = "Searching...";
+
+  try {
+    const params = new URLSearchParams({ q: query });
+    const data = await api(`/api/search?${params.toString()}`);
+    if (requestId !== state.searchRequestId) {
+      return;
+    }
+    state.searchResults = data.results || [];
+    searchStatus.textContent = state.searchResults.length
+      ? `${state.searchResults.length.toLocaleString()} match${state.searchResults.length === 1 ? "" : "es"}`
+      : "No matches";
+    renderSearchResults();
+  } catch (err) {
+    if (requestId === state.searchRequestId) {
+      searchStatus.textContent = "Search failed";
+    }
+  } finally {
+    if (requestId === state.searchRequestId) {
+      searchButton.disabled = false;
+    }
+  }
+}
+
 async function loadRecordings({ append = false } = {}) {
   if (state.loadingRecordings || (append && !state.hasMore)) {
     return;
@@ -526,11 +625,15 @@ async function loadMe() {
   try {
     const me = await api("/api/me");
     state.user = me;
+    state.searchEnabled = Boolean(me.search_enabled);
+    updateSearchVisibility();
     userLabel.textContent = `Signed in as ${me.username}`;
     showApp();
     await loadHeatmap();
     await loadRecordings();
   } catch (err) {
+    state.searchEnabled = false;
+    updateSearchVisibility();
     showLogin();
   }
 }
@@ -605,7 +708,28 @@ if (logoutButton) {
   logoutButton.addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" });
     state.user = null;
+    state.searchEnabled = false;
+    state.searchResults = [];
+    updateSearchVisibility();
     showLogin();
+  });
+}
+
+if (searchForm) {
+  searchForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await runSearch();
+  });
+}
+
+if (searchResults) {
+  searchResults.addEventListener("click", (event) => {
+    const target = event.target.closest("button[data-view]");
+    if (!target) {
+      return;
+    }
+    const params = new URLSearchParams({ t: target.dataset.timestamp || "0" });
+    window.open(`/view/${target.dataset.view}?${params.toString()}`, "_blank");
   });
 }
 

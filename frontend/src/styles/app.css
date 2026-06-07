@@ -206,6 +206,64 @@ button.secondary.danger:hover {
   flex-wrap: wrap;
 }
 
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 8px;
+  align-items: center;
+}
+
+.search-status {
+  min-height: 18px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.search-result {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.search-result:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.search-result-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.search-result-meta,
+.search-result-text {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-result-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hidden {
   display: none !important;
 }

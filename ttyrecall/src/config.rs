@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use color_eyre::eyre::WrapErr;
 use serde::Deserialize;
 
 use crate::daemon::{DaemonConfig, DaemonConfigFile};
@@ -11,6 +12,7 @@ pub(crate) struct AppConfig {
     pub(crate) root: String,
     pub(crate) daemon: DaemonConfig,
     pub(crate) web: WebConfigFile,
+    pub(crate) search: SearchConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -18,6 +20,7 @@ struct AppConfigFile {
     root: Option<String>,
     daemon: Option<DaemonConfigFile>,
     web: Option<WebConfigFile>,
+    search: Option<SearchConfigFile>,
     #[allow(dead_code)]
     tui: Option<TuiConfigFile>,
 }
@@ -33,6 +36,20 @@ pub(crate) struct WebConfigFile {
     pub(crate) single_user_username: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(crate) struct SearchConfigFile {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) ripgrep_path: Option<String>,
+    pub(crate) max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SearchConfig {
+    pub(crate) enabled: bool,
+    pub(crate) ripgrep_path: String,
+    pub(crate) max_results: usize,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct TuiConfigFile {}
 
@@ -42,6 +59,7 @@ impl AppConfigFile {
             root: override_config.root.or(self.root),
             daemon: merge_option(self.daemon, override_config.daemon, DaemonConfigFile::merge),
             web: merge_option(self.web, override_config.web, WebConfigFile::merge),
+            search: merge_option(self.search, override_config.search, SearchConfigFile::merge),
             tui: merge_option(self.tui, override_config.tui, TuiConfigFile::merge),
         }
     }
@@ -65,6 +83,27 @@ impl WebConfigFile {
     }
 }
 
+impl SearchConfigFile {
+    fn merge(self, override_config: Self) -> Self {
+        Self {
+            enabled: override_config.enabled.or(self.enabled),
+            ripgrep_path: override_config.ripgrep_path.or(self.ripgrep_path),
+            max_results: override_config.max_results.or(self.max_results),
+        }
+    }
+}
+
+impl SearchConfig {
+    pub(crate) fn from_file(config: Option<SearchConfigFile>) -> Self {
+        let config = config.unwrap_or_default();
+        Self {
+            enabled: config.enabled.unwrap_or(false),
+            ripgrep_path: config.ripgrep_path.unwrap_or_else(|| "rg".to_string()),
+            max_results: config.max_results.unwrap_or(50),
+        }
+    }
+}
+
 impl TuiConfigFile {
     fn merge(self, _override_config: Self) -> Self {
         Self {}
@@ -72,15 +111,18 @@ impl TuiConfigFile {
 }
 
 pub(crate) fn load_system(path: Option<PathBuf>) -> color_eyre::Result<AppConfig> {
-    let path = path.unwrap_or_else(system_config_path);
-    Ok(from_file_config(load_optional_file(path)?))
+    let file_config = match path {
+        Some(path) => load_required_file(path)?,
+        None => load_optional_file(system_config_path())?,
+    };
+    Ok(from_file_config(file_config))
 }
 
 pub(crate) fn load_system_with_user_override(
     path: Option<PathBuf>,
 ) -> color_eyre::Result<AppConfig> {
     if let Some(path) = path {
-        return Ok(from_file_config(load_optional_file(path)?));
+        return Ok(from_file_config(load_required_file(path)?));
     }
 
     let system_config = load_optional_file(system_config_path())?;
@@ -102,8 +144,10 @@ fn load_optional_file(path: PathBuf) -> color_eyre::Result<AppConfigFile> {
 }
 
 fn load_required_file(path: PathBuf) -> color_eyre::Result<AppConfigFile> {
-    let content = std::fs::read_to_string(&path)?;
-    Ok(toml::from_str::<AppConfigFile>(&content)?)
+    let content = std::fs::read_to_string(&path)
+        .wrap_err_with(|| format!("failed to read config file {}", path.display()))?;
+    toml::from_str::<AppConfigFile>(&content)
+        .wrap_err_with(|| format!("failed to parse config file {}", path.display()))
 }
 
 fn system_config_path() -> PathBuf {
@@ -142,6 +186,7 @@ fn from_file_config(file_config: AppConfigFile) -> AppConfig {
         root: root.clone(),
         daemon: DaemonConfig::from_file(root.clone(), file_config.daemon),
         web: file_config.web.unwrap_or_default(),
+        search: SearchConfig::from_file(file_config.search),
     }
 }
 
@@ -162,17 +207,22 @@ compress = "zstd"
 [web]
 
 [tui]
+
+[search]
 "#,
         )
         .unwrap();
-        let root = config.root.unwrap();
-        let daemon = DaemonConfig::from_file(root, config.daemon);
+        let app_config = from_file_config(config);
+        let daemon = app_config.daemon;
 
         assert_eq!(daemon.root, "/tmp/ttyrecall");
         assert!(matches!(daemon.compress, Compress::Zstd(None)));
         assert!(matches!(daemon.mode, Mode::BlockList));
         assert_eq!(daemon.uids, std::collections::HashSet::from([0]));
         assert_eq!(daemon.soft_budget, 52_428_800);
+        assert!(!app_config.search.enabled);
+        assert_eq!(app_config.search.ripgrep_path, "rg");
+        assert_eq!(app_config.search.max_results, 50);
     }
 
     #[test]
@@ -183,6 +233,8 @@ compress = "zstd"
 
         assert_eq!(config.root, "/var/lib/ttyrecall");
         assert_eq!(config.web.bind.as_deref(), Some("127.0.0.1:8450"));
+        assert_eq!(config.search.ripgrep_path, "rg");
+        assert_eq!(config.search.max_results, 50);
     }
 
     #[test]
@@ -199,6 +251,11 @@ soft_budget = 10
 bind = "127.0.0.1:8450"
 pam_service = "login"
 session_ttl_minutes = 60
+
+[search]
+enabled = false
+ripgrep_path = "/usr/bin/rg"
+max_results = 25
 "#,
         )
         .unwrap();
@@ -209,6 +266,10 @@ root = "/tmp/ttyrecall"
 [web]
 bind = "127.0.0.1:9000"
 session_ttl_minutes = 5
+
+[search]
+enabled = true
+max_results = 5
 "#,
         )
         .unwrap();
@@ -220,5 +281,50 @@ session_ttl_minutes = 5
         assert_eq!(config.web.pam_service.as_deref(), Some("login"));
         assert_eq!(config.web.session_ttl_minutes, Some(5));
         assert_eq!(config.daemon.soft_budget, 10);
+        assert!(config.search.enabled);
+        assert_eq!(config.search.ripgrep_path, "/usr/bin/rg");
+        assert_eq!(config.search.max_results, 5);
+    }
+
+    #[test]
+    fn explicit_system_config_path_must_exist() {
+        let missing = missing_test_config_path("system");
+
+        let error = load_system(Some(missing.clone())).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains(&format!("failed to read config file {}", missing.display())));
+    }
+
+    #[test]
+    fn explicit_user_override_config_path_must_exist() {
+        let missing = missing_test_config_path("user-override");
+
+        let error = load_system_with_user_override(Some(missing.clone())).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains(&format!("failed to read config file {}", missing.display())));
+    }
+
+    #[test]
+    fn optional_missing_config_file_still_uses_defaults() {
+        let missing = missing_test_config_path("optional");
+
+        let config = load_optional_file(missing).unwrap();
+        let app_config = from_file_config(config);
+
+        assert_eq!(app_config.root, "/var/lib/ttyrecall");
+        assert!(!app_config.search.enabled);
+    }
+
+    fn missing_test_config_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ttyrecall-missing-config-{}-{name}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
     }
 }

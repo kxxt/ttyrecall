@@ -7,7 +7,7 @@ use std::{
 
 use tokio::sync::RwLock;
 
-use crate::catalog::RecordingIndex;
+use crate::{catalog::RecordingIndex, search::RipgrepSearchConfig};
 
 use super::config::SingleUser;
 
@@ -29,6 +29,8 @@ pub(super) struct AppState {
     pub(super) frontend_root: PathBuf,
     pub(super) single_user_token: Option<String>,
     pub(super) cast_cache: tokio::sync::Mutex<CastCache>,
+    pub(super) search_enabled: bool,
+    pub(super) search: RipgrepSearchConfig,
 }
 
 #[derive(Debug)]
@@ -52,6 +54,8 @@ impl AppState {
         single_user: Option<SingleUser>,
         frontend_root: PathBuf,
         single_user_token: Option<String>,
+        search_enabled: bool,
+        search: RipgrepSearchConfig,
     ) -> Self {
         Self {
             storage_root,
@@ -63,6 +67,8 @@ impl AppState {
             frontend_root,
             single_user_token,
             cast_cache: tokio::sync::Mutex::new(CastCache::default()),
+            search_enabled,
+            search,
         }
     }
 }

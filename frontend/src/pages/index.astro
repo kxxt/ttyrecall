@@ -79,6 +79,17 @@ import iconUrl from "../../../assets/icon.svg?url";
             </button>
           </div>
         </div>
+        <div id="searchCard" class="card hidden">
+          <h2>Search</h2>
+          <form id="searchForm" class="search-form">
+            <input id="searchInput" type="search" placeholder="Search recordings" autocomplete="off" />
+            <button id="searchButton" class="icon-button" type="submit" aria-label="Search" title="Search">
+              <i data-lucide="search" aria-hidden="true"></i>
+            </button>
+          </form>
+          <div id="searchStatus" class="muted search-status"></div>
+          <div id="searchResults" class="search-results"></div>
+        </div>
       </div>
 
       <div class="card" style="margin-top: 20px;">

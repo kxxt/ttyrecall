@@ -11,6 +11,7 @@ mod config;
 mod daemon;
 mod manager;
 mod player;
+mod search;
 mod session;
 mod tui;
 mod web;

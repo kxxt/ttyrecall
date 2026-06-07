@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use nix::unistd::{Uid, User};
 
 use crate::config as common_config;
+use crate::search::RipgrepSearchConfig;
 
 use super::session::new_session_token;
 
@@ -22,6 +23,8 @@ pub(super) struct WebConfig {
     pub(super) single_user_token: Option<String>,
     pub(super) single_user_uid: Option<u32>,
     pub(super) single_user_username: Option<String>,
+    pub(super) search_enabled: bool,
+    pub(super) search: RipgrepSearchConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +43,7 @@ pub(crate) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::
         WebMode::SingleUser { .. } => common_config::load_system_with_user_override(path)?,
     };
     let file_config = app_config.web;
+    let search_config = app_config.search;
 
     Ok(WebConfig {
         bind: file_config.bind.unwrap_or(default_bind),
@@ -58,6 +62,11 @@ pub(crate) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::
         single_user_token: file_config.single_user_token,
         single_user_uid: file_config.single_user_uid,
         single_user_username: file_config.single_user_username,
+        search_enabled: search_config.enabled,
+        search: RipgrepSearchConfig {
+            ripgrep_path: search_config.ripgrep_path,
+            max_results: search_config.max_results,
+        },
     })
 }
 

@@ -9,6 +9,7 @@
 - Rust toolchain (optional)
 - clang, bpftool, and libbpf headers (necessary for the default libbpf CO-RE eBPF backend).
 - Node.js and npm (necessary for building the web frontend).
+- ripgrep (necessary only when `[search].enabled = true`).
 - Rust nightly toolchain with rust source (necessary only for the optional Aya eBPF backend).
 - bpf-linker: `cargo install bpf-linker` or `pacman -S bpf-linker` (Arch Linux; necessary only for the optional Aya eBPF backend).
 

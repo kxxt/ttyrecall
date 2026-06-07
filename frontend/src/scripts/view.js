@@ -13,6 +13,8 @@ const iconSet = {
 };
 
 const id = window.location.pathname.split("/").pop();
+const params = new URLSearchParams(window.location.search);
+const startAt = Math.max(0, Number(params.get("t") || "0"));
 const castUrl = `/api/recordings/${id}/cast`;
 const downloadUrl = `/api/recordings/${id}/download`;
 const downloadLink = document.getElementById("downloadLink");
@@ -64,6 +66,7 @@ if (typeof createPlayer === "function") {
     loop: false,
     idleTimeLimit: 2,
     fit: "both",
+    startAt,
   });
 } else {
   fallback.classList.remove("hidden");

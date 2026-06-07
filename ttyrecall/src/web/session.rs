@@ -34,6 +34,7 @@ pub(super) struct TokenLoginRequest {
 struct MeResponse {
     username: String,
     uid: u32,
+    search_enabled: bool,
 }
 
 pub(super) struct SessionInfo {
@@ -108,6 +109,7 @@ pub(super) async fn me(
         Ok(session) => Json(MeResponse {
             username: session.username,
             uid: session.uid,
+            search_enabled: state.search_enabled,
         })
         .into_response(),
         Err(status) => (status, "Not authenticated").into_response(),
@@ -127,7 +129,16 @@ async fn create_session(state: &AppState, username: String, uid: u32) -> Respons
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
 
-    (StatusCode::OK, headers, Json(MeResponse { username, uid })).into_response()
+    (
+        StatusCode::OK,
+        headers,
+        Json(MeResponse {
+            username,
+            uid,
+            search_enabled: state.search_enabled,
+        }),
+    )
+        .into_response()
 }
 
 pub(super) fn new_session_token() -> String {

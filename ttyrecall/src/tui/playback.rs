@@ -41,6 +41,7 @@ pub(super) struct Playback {
     parser: vt100::Parser,
     parser_rows: u16,
     parser_cols: u16,
+    start_offset: f64,
 }
 
 impl Playback {
@@ -54,6 +55,7 @@ impl Playback {
             parser: vt100::Parser::new(24, 80, 0),
             parser_rows: 24,
             parser_cols: 80,
+            start_offset: 0.0,
         }
     }
 
@@ -64,19 +66,21 @@ impl Playback {
         playback
     }
 
-    pub(super) fn load(path: PathBuf, title: String) -> color_eyre::Result<Self> {
+    pub(super) fn load_at(path: PathBuf, title: String, start_at: f64) -> color_eyre::Result<Self> {
         let (header, events) = load_cast(&path)?;
         let rows = header.height.unwrap_or(24).clamp(1, 200);
         let cols = header.width.unwrap_or(80).clamp(1, 400);
+        let start_offset = normalize_time(start_at);
         Ok(Self {
             title,
             error: None,
             events,
             next_event: 0,
-            started_at: Instant::now(),
+            started_at: start_instant(Instant::now(), start_offset),
             parser: vt100::Parser::new(rows, cols, 0),
             parser_rows: rows,
             parser_cols: cols,
+            start_offset,
         })
     }
 
@@ -143,7 +147,7 @@ impl Playback {
     fn restart_at(&mut self, now: Instant) {
         self.parser = vt100::Parser::new(self.parser_rows, self.parser_cols, 0);
         self.next_event = 0;
-        self.started_at = now;
+        self.started_at = start_instant(now, self.start_offset);
     }
 
     fn last_event_time(&self) -> f64 {
@@ -220,6 +224,11 @@ fn normalize_time(time: f64) -> f64 {
     }
 }
 
+fn start_instant(now: Instant, offset: f64) -> Instant {
+    now.checked_sub(std::time::Duration::from_secs_f64(normalize_time(offset)))
+        .unwrap_or(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +278,7 @@ mod tests {
             parser: vt100::Parser::new(24, 80, 0),
             parser_rows: 24,
             parser_cols: 80,
+            start_offset: 0.0,
         };
 
         playback.tick(started_at);
@@ -277,5 +287,27 @@ mod tests {
 
         playback.tick(started_at + std::time::Duration::from_secs(2));
         assert_eq!(playback.next_event, 0);
+    }
+
+    #[test]
+    fn playback_can_start_at_offset() {
+        let path = std::env::temp_dir().join(format!(
+            "ttyrecall-playback-offset-{}.cast",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            br#"{"version":2,"width":80,"height":24}
+[0.0,"o","first"]
+[2.0,"o"," second"]
+"#,
+        )
+        .unwrap();
+
+        let mut playback = Playback::load_at(path.clone(), "test".to_string(), 2.0).unwrap();
+        playback.tick(Instant::now());
+
+        assert!(playback.screen_text().contains("second"));
+        let _ = std::fs::remove_file(path);
     }
 }
