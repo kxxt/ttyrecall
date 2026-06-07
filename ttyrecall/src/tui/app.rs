@@ -31,6 +31,7 @@ pub(super) struct App {
     pub(super) playback: Playback,
     pub(super) status: String,
     pub(super) delete_confirmation: Option<DeleteConfirmation>,
+    pub(super) search_enabled: bool,
     confirm_deletes: bool,
 }
 
@@ -46,6 +47,7 @@ impl App {
         uid: u32,
         username: String,
         recording_index: Arc<StdRwLock<RecordingIndex>>,
+        search_enabled: bool,
     ) -> Self {
         Self {
             storage_root,
@@ -67,6 +69,7 @@ impl App {
             playback: Playback::empty(),
             status: String::new(),
             delete_confirmation: None,
+            search_enabled,
             confirm_deletes: true,
         }
     }
@@ -378,6 +381,7 @@ mod tests {
             1000,
             "user".to_string(),
             Arc::new(StdRwLock::new(RecordingIndex::default())),
+            false,
         );
         app.all_recordings = recordings;
         app.apply_filter();
@@ -475,7 +479,7 @@ mod tests {
         let mut index = RecordingIndex::default();
         index.upsert_path(&root, &recording);
         let index = Arc::new(StdRwLock::new(index));
-        let mut app = App::new(root.clone(), 1000, "user".to_string(), index.clone());
+        let mut app = App::new(root.clone(), 1000, "user".to_string(), index.clone(), false);
         app.refresh();
 
         app.request_delete_selected();
@@ -508,6 +512,7 @@ mod tests {
             1000,
             "user".to_string(),
             Arc::new(StdRwLock::new(index)),
+            false,
         );
         app.refresh();
 

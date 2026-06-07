@@ -52,5 +52,18 @@ session_ttl_minutes = 60
 # single_user_uid = 1000
 # single_user_username = "username"
 
+# Full-text search indexer config
+[indexer]
+
+# Search is disabled unless this is enabled and the separate indexer service is running.
+enabled = false
+
+# Meilisearch instance used by ttyrecall indexer and web search.
+meilisearch_url = "http://127.0.0.1:7700"
+# api_key = "YOUR_MEILISEARCH_API_KEY"
+index_name = "ttyrecall"
+batch_size = 100
+max_search_results = 50
+
 # TUI config
 [tui]

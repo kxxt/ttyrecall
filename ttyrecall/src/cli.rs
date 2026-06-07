@@ -21,6 +21,14 @@ pub enum Command {
         )]
         config: Option<PathBuf>,
     },
+    #[clap(about = "Run ttyrecall full-text search indexer service")]
+    Indexer {
+        #[clap(
+            long,
+            help = "Path to config file, /etc/ttyrecall/config.toml by default"
+        )]
+        config: Option<PathBuf>,
+    },
     #[clap(about = "Play recorded file(s)")]
     Play {
         #[arg(last = true, required = true, help = "files to play")]

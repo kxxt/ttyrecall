@@ -9,6 +9,7 @@ import MonitorCog from "lucide/dist/esm/icons/monitor-cog.mjs";
 import Moon from "lucide/dist/esm/icons/moon.mjs";
 import Play from "lucide/dist/esm/icons/play.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
+import Search from "lucide/dist/esm/icons/search.mjs";
 import Sun from "lucide/dist/esm/icons/sun.mjs";
 import Trash2 from "lucide/dist/esm/icons/trash-2.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
@@ -23,6 +24,7 @@ const iconSet = {
   moon: Moon,
   play: Play,
   "refresh-cw": RefreshCw,
+  search: Search,
   sun: Sun,
   "trash-2": Trash2,
   x: X,
@@ -41,6 +43,8 @@ const state = {
   hasMore: true,
   loadingRecordings: false,
   recordingsRequestId: 0,
+  searchEnabled: false,
+  searching: false,
 };
 
 const loginPanel = document.getElementById("loginPanel");
@@ -65,6 +69,11 @@ const selectAllGallery = document.getElementById("selectAllGallery");
 const selectAllGalleryWrap = document.getElementById("selectAllGalleryWrap");
 const loadMoreSentinel = document.getElementById("loadMoreSentinel");
 const loadState = document.getElementById("loadState");
+const searchPanel = document.getElementById("searchPanel");
+const searchForm = document.getElementById("searchForm");
+const searchInput = document.getElementById("searchInput");
+const searchButton = document.getElementById("searchButton");
+const searchResults = document.getElementById("searchResults");
 
 const galleryPlayers = new Map();
 let galleryPreviewObserver = null;
@@ -108,6 +117,15 @@ function iconButton(label, icon, dataAttr, id, extraClass = "") {
   `;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, Object.assign({
     headers: { "Content-Type": "application/json" },
@@ -122,6 +140,13 @@ async function api(path, options = {}) {
     return await response.json();
   }
   return await response.text();
+}
+
+function setSearchEnabled(enabled) {
+  state.searchEnabled = Boolean(enabled);
+  if (searchPanel) {
+    searchPanel.classList.toggle("hidden", !state.searchEnabled);
+  }
 }
 
 function showLogin(message) {
@@ -400,6 +425,67 @@ function updateLoadState() {
   loadState.classList.toggle("hidden", state.total <= RECORDINGS_PAGE_SIZE && !state.hasMore);
 }
 
+function formatTimestamp(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const minutes = Math.floor(totalSeconds / 60);
+  const remaining = totalSeconds % 60;
+  return `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
+function renderSearchResults(results, query) {
+  if (!searchResults) {
+    return;
+  }
+  if (!query) {
+    searchResults.textContent = "";
+    return;
+  }
+  if (!results.length) {
+    searchResults.innerHTML = '<div class="muted search-empty">No matches found.</div>';
+    return;
+  }
+  searchResults.innerHTML = "";
+  for (const result of results) {
+    const item = document.createElement("a");
+    item.className = "search-result";
+    item.href = `/view/${encodeURIComponent(result.recording_id)}?t=${encodeURIComponent(result.timestamp)}`;
+    item.target = "_blank";
+    const snippet = result.snippet || result.text || "";
+    item.innerHTML = `
+      <div class="search-result-title">
+        <span>${escapeHtml(result.display || result.name)}</span>
+        <span class="search-time">${formatTimestamp(result.timestamp)}</span>
+      </div>
+      <div class="search-snippet">${escapeHtml(snippet)}</div>
+    `;
+    searchResults.appendChild(item);
+  }
+}
+
+async function runSearch() {
+  if (!state.searchEnabled || !searchInput || !searchResults) {
+    return;
+  }
+  const query = searchInput.value.trim();
+  if (!query) {
+    renderSearchResults([], "");
+    return;
+  }
+  state.searching = true;
+  searchButton.disabled = true;
+  searchResults.textContent = "Searching...";
+  try {
+    const params = new URLSearchParams({ q: query });
+    const data = await api(`/api/search?${params.toString()}`);
+    renderSearchResults(data.results || [], query);
+  } catch (err) {
+    searchResults.textContent = "Search failed.";
+  } finally {
+    state.searching = false;
+    searchButton.disabled = false;
+  }
+}
+
 async function loadRecordings({ append = false } = {}) {
   if (state.loadingRecordings || (append && !state.hasMore)) {
     return;
@@ -526,11 +612,13 @@ async function loadMe() {
   try {
     const me = await api("/api/me");
     state.user = me;
+    setSearchEnabled(me.search_enabled);
     userLabel.textContent = `Signed in as ${me.username}`;
     showApp();
     await loadHeatmap();
     await loadRecordings();
   } catch (err) {
+    setSearchEnabled(false);
     showLogin();
   }
 }
@@ -605,7 +693,15 @@ if (logoutButton) {
   logoutButton.addEventListener("click", async () => {
     await api("/api/logout", { method: "POST" });
     state.user = null;
+    setSearchEnabled(false);
     showLogin();
+  });
+}
+
+if (searchForm) {
+  searchForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await runSearch();
   });
 }
 

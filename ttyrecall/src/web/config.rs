@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use nix::unistd::{Uid, User};
 
 use crate::config as common_config;
+use crate::indexer::IndexerConfig;
 
 use super::session::new_session_token;
 
@@ -22,6 +23,7 @@ pub(super) struct WebConfig {
     pub(super) single_user_token: Option<String>,
     pub(super) single_user_uid: Option<u32>,
     pub(super) single_user_username: Option<String>,
+    pub(super) indexer: IndexerConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,7 @@ pub(crate) fn load_config(mode: &WebMode, path: Option<PathBuf>) -> color_eyre::
         single_user_token: file_config.single_user_token,
         single_user_uid: file_config.single_user_uid,
         single_user_username: file_config.single_user_username,
+        indexer: app_config.indexer,
     })
 }
 

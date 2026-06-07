@@ -9,10 +9,12 @@ mod catalog;
 mod cli;
 mod config;
 mod daemon;
+mod indexer;
 mod manager;
 mod player;
 mod session;
 mod tui;
+mod watcher;
 mod web;
 
 #[tokio::main(worker_threads = 2)]
@@ -25,6 +27,9 @@ async fn main() -> color_eyre::Result<()> {
             Daemon::new(config::load_required(config)?.daemon)?
                 .run()
                 .await?;
+        }
+        Command::Indexer { config } => {
+            indexer::Indexer::run(config::load_required(config)?.indexer).await?;
         }
         Command::GenerateCompletion { shell } => {
             let mut cmd = CommandLine::command();

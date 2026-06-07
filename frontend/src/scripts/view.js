@@ -15,6 +15,7 @@ const iconSet = {
 const id = window.location.pathname.split("/").pop();
 const castUrl = `/api/recordings/${id}/cast`;
 const downloadUrl = `/api/recordings/${id}/download`;
+const startAt = Number(new URLSearchParams(window.location.search).get("t") || 0);
 const downloadLink = document.getElementById("downloadLink");
 const fallback = document.getElementById("fallback");
 const playerContainer = document.getElementById("player");
@@ -64,6 +65,7 @@ if (typeof createPlayer === "function") {
     loop: false,
     idleTimeLimit: 2,
     fit: "both",
+    startAt: Number.isFinite(startAt) && startAt > 0 ? startAt : 0,
   });
 } else {
   fallback.classList.remove("hidden");
