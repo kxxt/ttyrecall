@@ -149,16 +149,16 @@ static __always_inline int emit_short_event(struct raw_short_event *event)
     return 0;
 }
 
-static __always_inline int tty_slave_subtype(struct tty_struct *tty)
+static __always_inline int is_unix98_pty_slave(struct tty_struct *tty)
 {
     struct tty_driver *driver;
-    int subtype;
+    int major;
 
     if (bpf_core_read(&driver, sizeof(driver), &tty->driver) < 0)
         return 0;
-    if (bpf_core_read(&subtype, sizeof(subtype), &driver->subtype) < 0)
+    if (bpf_core_read(&major, sizeof(major), &driver->major) < 0)
         return 0;
-    return subtype;
+    return major >= 136 && major <= 143;
 }
 
 SEC("fexit/pty_write")
@@ -174,7 +174,7 @@ int BPF_PROG(pty_write, struct tty_struct *tty, const unsigned char *buf, size_t
         return 0;
     if (!should_trace(id))
         return 0;
-    if (tty_slave_subtype(tty) != 0x0002)
+    if (!is_unix98_pty_slave(tty))
         return 0;
 
     slice_size = ret < TTY_WRITE_MAX ? ret : TTY_WRITE_MAX;
