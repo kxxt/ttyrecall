@@ -189,18 +189,14 @@ pub(crate) fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     }
 }
 
-pub(crate) fn recording_id_for_rel_path(rel: &Path) -> String {
-    URL_SAFE_NO_PAD.encode(rel.to_string_lossy().as_bytes())
-}
-
-pub(crate) fn recording_info(user_root: &Path, path: &Path) -> Option<RecordingInfo> {
+fn recording_info(user_root: &Path, path: &Path) -> Option<RecordingInfo> {
     let file_name = path.file_name()?.to_string_lossy().to_string();
     if !is_recording_file_name(&file_name) {
         return None;
     }
 
     let rel = path.strip_prefix(user_root).ok()?;
-    let id = recording_id_for_rel_path(rel);
+    let id = URL_SAFE_NO_PAD.encode(rel.to_string_lossy().as_bytes());
 
     let compressed = file_name.ends_with(".zst");
     let display = format_display(rel).unwrap_or_else(|| file_name.clone());
@@ -219,7 +215,7 @@ pub(crate) fn recording_info(user_root: &Path, path: &Path) -> Option<RecordingI
     })
 }
 
-pub(crate) fn is_recording_file_name(file_name: &str) -> bool {
+fn is_recording_file_name(file_name: &str) -> bool {
     file_name.ends_with(".cast") || file_name.ends_with(".cast.zst")
 }
 
@@ -274,20 +270,14 @@ mod tests {
         let first = root.join("1000/2026/06/05/zsh-pty1-09:15.cast.zst");
         let second = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
         let ignored = root.join("1000/2026/06/06/not-a-recording.txt");
-        let unfinished = root.join("1000/2026/06/06/bash-pty3-10:31.cast.unfinished");
-        let unfinished_zst = root.join("1000/2026/06/06/bash-pty4-10:32.cast.zst.unfinished");
         write_file(&first, "{}");
         write_file(&second, "{}");
         write_file(&ignored, "{}");
-        write_file(&unfinished, "{}");
-        write_file(&unfinished_zst, "{}");
 
         let mut index = RecordingIndex::default();
         index.upsert_path(&root, &first);
         index.upsert_path(&root, &second);
         index.upsert_path(&root, &ignored);
-        index.upsert_path(&root, &unfinished);
-        index.upsert_path(&root, &unfinished_zst);
 
         let recordings = index.list_for_user(1000);
         assert_eq!(recordings.len(), 2);
@@ -303,16 +293,6 @@ mod tests {
         assert_eq!(heatmap[1].count, 1);
 
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn unfinished_recording_names_are_not_recordings() {
-        assert!(is_recording_file_name("bash-pty2-10:30.cast"));
-        assert!(is_recording_file_name("bash-pty2-10:30.cast.zst"));
-        assert!(!is_recording_file_name("bash-pty2-10:30.cast.unfinished"));
-        assert!(!is_recording_file_name(
-            "bash-pty2-10:30.cast.zst.unfinished"
-        ));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::{
     fs::{create_dir, set_permissions, File, Permissions},
     io::{self, ErrorKind},
     os::{linux::fs::MetadataExt, unix::fs::PermissionsExt},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use chrono::{DateTime, Datelike, Local, Timelike};
@@ -16,21 +16,12 @@ use nix::{
 
 use crate::daemon::Compress;
 
-pub(crate) const RECORDING_UNFINISHED_SUFFIX: &str = ".unfinished";
-
 /// A manager for on-disk recordings
 #[derive(Debug)]
 pub struct Manager {
     root: PathBuf,
     group: Option<Group>,
     pub compress: Compress,
-}
-
-#[derive(Debug)]
-pub(crate) struct PendingRecordingFile {
-    pub(crate) file: File,
-    pub(crate) unfinished_path: PathBuf,
-    pub(crate) final_path: PathBuf,
 }
 
 impl Manager {
@@ -69,12 +60,12 @@ impl Manager {
         })
     }
 
-    pub(crate) fn create_recording_file(
+    pub fn create_recording_file(
         &self,
         uid: Uid,
         pty_id: u32,
         comm: &str,
-    ) -> color_eyre::Result<PendingRecordingFile> {
+    ) -> color_eyre::Result<File> {
         let now = chrono::Local::now();
 
         let path_for_recording = |counter: usize| {
@@ -92,24 +83,11 @@ impl Manager {
             ))
         };
         for counter in 0..32768 {
-            let final_path = path_for_recording(counter);
-            if final_path.exists() {
-                continue;
-            }
-
-            let unfinished_path = unfinished_path_for(&final_path);
-            match File::create_new(&unfinished_path) {
+            let path = path_for_recording(counter);
+            match File::create_new(&path) {
                 Ok(f) => {
-                    chown(
-                        &unfinished_path,
-                        Some(uid),
-                        self.group.as_ref().map(|g| g.gid),
-                    )?;
-                    return Ok(PendingRecordingFile {
-                        file: f,
-                        unfinished_path,
-                        final_path,
-                    });
+                    chown(&path, Some(uid), self.group.as_ref().map(|g| g.gid))?;
+                    return Ok(f);
                 }
                 Err(e) => match e.kind() {
                     ErrorKind::AlreadyExists => continue,
@@ -158,19 +136,4 @@ impl Manager {
         chown(dir, Some(uid), self.group.as_ref().map(|g| g.gid))?;
         Ok(())
     }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(root: PathBuf, compress: Compress) -> Self {
-        Self {
-            root,
-            group: None,
-            compress,
-        }
-    }
-}
-
-pub(crate) fn unfinished_path_for(path: &Path) -> PathBuf {
-    let mut unfinished = path.as_os_str().to_os_string();
-    unfinished.push(RECORDING_UNFINISHED_SUFFIX);
-    PathBuf::from(unfinished)
 }

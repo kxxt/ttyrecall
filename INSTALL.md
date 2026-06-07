@@ -44,16 +44,8 @@ Set env `ZSTD_SYS_USE_PKG_CONFIG=1` to dynamically link to system zstd library.
 
 ## Config
 
-`etc/config.toml` provides a sample shared config file for daemon, web, indexer, and TUI subcommands. The system-wide runtime path is `/etc/ttyrecall/config.toml`.
+`etc/config.toml` provides a sample shared config file for daemon, web, and TUI subcommands. The system-wide runtime path is `/etc/ttyrecall/config.toml`.
 
-For `ttyrecall web` and `ttyrecall browse`, user config is also loaded from `$XDG_CONFIG_HOME/ttyrecall/config.toml` or `~/.config/ttyrecall/config.toml`. Values in the user config override system-wide values field by field. `ttyrecall daemon`, `ttyrecall indexer`, and `ttyrecall web-service` use the system-wide config only.
-
-Full-text search requires Meilisearch plus the separate indexer process:
-
-```bash
-ttyrecall indexer --config /etc/ttyrecall/config.toml
-```
-
-Set `[indexer].enabled = true` and configure `meilisearch_url`, `api_key` if needed, and `index_name`. The web UI and TUI only expose search controls when that config flag is enabled.
+For `ttyrecall web` and `ttyrecall browse`, user config is also loaded from `$XDG_CONFIG_HOME/ttyrecall/config.toml` or `~/.config/ttyrecall/config.toml`. Values in the user config override system-wide values field by field. `ttyrecall daemon` and `ttyrecall web-service` use the system-wide config only.
 
 See the `ttyrecall-git` AUR package for a simple systemd service.

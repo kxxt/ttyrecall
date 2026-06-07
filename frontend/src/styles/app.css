@@ -206,62 +206,6 @@ button.secondary.danger:hover {
   flex-wrap: wrap;
 }
 
-.search-form {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.search-form input {
-  min-width: 0;
-}
-
-.search-results {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.search-result {
-  display: block;
-  color: var(--ink);
-  text-decoration: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-}
-
-.search-result:hover {
-  border-color: var(--accent);
-}
-
-.search-result-title {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.search-time {
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
-}
-
-.search-snippet {
-  margin-top: 6px;
-  color: var(--muted);
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.search-empty {
-  padding: 8px 0;
-}
-
 .hidden {
   display: none !important;
 }

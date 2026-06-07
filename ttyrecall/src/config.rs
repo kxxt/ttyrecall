@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::daemon::{DaemonConfig, DaemonConfigFile};
-use crate::indexer::{IndexerConfig, IndexerConfigFile};
 
 pub(crate) const DEFAULT_CONFIG_PATH: &str = "/etc/ttyrecall/config.toml";
 
@@ -12,7 +11,6 @@ pub(crate) struct AppConfig {
     pub(crate) root: String,
     pub(crate) daemon: DaemonConfig,
     pub(crate) web: WebConfigFile,
-    pub(crate) indexer: IndexerConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -20,7 +18,6 @@ struct AppConfigFile {
     root: Option<String>,
     daemon: Option<DaemonConfigFile>,
     web: Option<WebConfigFile>,
-    indexer: Option<IndexerConfigFile>,
     #[allow(dead_code)]
     tui: Option<TuiConfigFile>,
 }
@@ -45,11 +42,6 @@ impl AppConfigFile {
             root: override_config.root.or(self.root),
             daemon: merge_option(self.daemon, override_config.daemon, DaemonConfigFile::merge),
             web: merge_option(self.web, override_config.web, WebConfigFile::merge),
-            indexer: merge_option(
-                self.indexer,
-                override_config.indexer,
-                IndexerConfigFile::merge,
-            ),
             tui: merge_option(self.tui, override_config.tui, TuiConfigFile::merge),
         }
     }
@@ -150,7 +142,6 @@ fn from_file_config(file_config: AppConfigFile) -> AppConfig {
         root: root.clone(),
         daemon: DaemonConfig::from_file(root.clone(), file_config.daemon),
         web: file_config.web.unwrap_or_default(),
-        indexer: IndexerConfig::from_file(root, file_config.indexer),
     }
 }
 
@@ -192,8 +183,6 @@ compress = "zstd"
 
         assert_eq!(config.root, "/var/lib/ttyrecall");
         assert_eq!(config.web.bind.as_deref(), Some("127.0.0.1:8450"));
-        assert!(!config.indexer.enabled);
-        assert_eq!(config.indexer.meilisearch_url, "http://127.0.0.1:7700");
     }
 
     #[test]
@@ -231,35 +220,5 @@ session_ttl_minutes = 5
         assert_eq!(config.web.pam_service.as_deref(), Some("login"));
         assert_eq!(config.web.session_ttl_minutes, Some(5));
         assert_eq!(config.daemon.soft_budget, 10);
-    }
-
-    #[test]
-    fn indexer_config_merges_field_by_field() {
-        let system = toml::from_str::<AppConfigFile>(
-            r#"
-[indexer]
-enabled = true
-meilisearch_url = "http://127.0.0.1:7700"
-api_key = "secret"
-index_name = "ttyrecall"
-batch_size = 80
-"#,
-        )
-        .unwrap();
-        let user = toml::from_str::<AppConfigFile>(
-            r#"
-[indexer]
-api_key = "override"
-batch_size = 10
-"#,
-        )
-        .unwrap();
-
-        let config = from_file_config(system.merge(user));
-
-        assert!(config.indexer.enabled);
-        assert_eq!(config.indexer.api_key.as_deref(), Some("override"));
-        assert_eq!(config.indexer.index_name, "ttyrecall");
-        assert_eq!(config.indexer.batch_size, 10);
     }
 }

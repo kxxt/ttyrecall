@@ -15,7 +15,6 @@ mod config;
 mod pages;
 mod pam;
 mod recordings;
-mod search;
 mod session;
 mod state;
 mod watcher;
@@ -27,7 +26,6 @@ pub(crate) struct BrowseContext {
     pub(crate) uid: u32,
     pub(crate) username: String,
     pub(crate) recording_index: Arc<StdRwLock<RecordingIndex>>,
-    pub(crate) search_enabled: bool,
 }
 
 pub(crate) fn browse_context(config_path: Option<PathBuf>) -> color_eyre::Result<BrowseContext> {
@@ -50,7 +48,6 @@ pub(crate) fn browse_context(config_path: Option<PathBuf>) -> color_eyre::Result
         uid: single_user.uid,
         username: single_user.username,
         recording_index,
-        search_enabled: config.indexer.enabled,
     })
 }
 
@@ -69,7 +66,6 @@ pub async fn run(
         recording_scan_roots(&config.root, single_user.as_ref()),
         recording_index.clone(),
     )?;
-    let search = crate::indexer::Indexer::search_client(&config.indexer)?;
 
     let state = Arc::new(state::AppState::new(
         config.root.clone(),
@@ -79,7 +75,6 @@ pub async fn run(
         single_user,
         config.frontend_root.clone(),
         single_user_token,
-        search,
     ));
 
     let app = Router::new()
@@ -104,7 +99,6 @@ pub async fn run(
         )
         .route("/api/recordings/:id/cast", get(recordings::cast_recording))
         .route("/api/heatmap", get(recordings::heatmap))
-        .route("/api/search", get(search::search_recordings))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;

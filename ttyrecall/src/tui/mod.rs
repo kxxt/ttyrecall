@@ -28,7 +28,6 @@ pub(crate) fn run(config_path: Option<PathBuf>) -> color_eyre::Result<()> {
         context.uid,
         context.username,
         context.recording_index,
-        context.search_enabled,
     );
     app.refresh();
 

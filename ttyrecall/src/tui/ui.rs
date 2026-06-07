@@ -425,11 +425,8 @@ fn preview_color(color: vt100::Color) -> Option<Color> {
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let controls = if app.search_enabled {
-        " q quit  / search  d delete  c clear filter  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll "
-    } else {
-        " q quit  d delete  c clear filter  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll "
-    };
+    let controls =
+        " q quit  d delete  c clear filter  click/drag resize  ctrl-left/right main  ctrl-up/down heatmap  pg scroll ";
     let status = if app.status.is_empty() {
         controls.to_string()
     } else {

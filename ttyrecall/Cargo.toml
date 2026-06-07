@@ -42,7 +42,6 @@ inotify = "0.11.0"
 ratatui = "=0.30.1"
 crossterm = "0.29.0"
 vt100 = "0.15.2"
-meilisearch-sdk = "0.33.0"
 
 [[bin]]
 name = "ttyrecall"
