@@ -1,0 +1,69 @@
+name: UKCI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: &trigger_paths
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "ttyrecall/**"
+      - "ttyrecall-common/**"
+      - "ttyrecall-ebpf/src/libbpf/**"
+      - ".github/workflows/ukci.yml"
+      - "nix/**"
+      - "flake.nix"
+      - "flake.lock"
+  pull_request:
+    paths: *trigger_paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ukci:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035
+        with:
+          nix_conf: |
+            keep-env-derivations = true
+            keep-outputs = true
+            http2 = false
+      - name: Run UKCI
+        env:
+          UKCI_SUMMARY_TITLE: UKCI (${{ matrix.os }})
+        run: nix run ".#ukci"
+      - name: Add gc root for UKCI
+        run: ln -s "$(nix eval --raw '.#ukci')" /nix/var/nix/gcroots/ukci
+
+  ukci-cross:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [riscv64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035
+        with:
+          nix_conf: |
+            keep-env-derivations = true
+            keep-outputs = true
+            http2 = false
+      - name: Run UKCI
+        env:
+          UKCI_SUMMARY_TITLE: UKCI (cross ${{ matrix.arch }})
+        run: nix run ".#ukci-${{ matrix.arch }}"
+      - name: Add gc root for UKCI
+        run: ln -s "$(nix eval --raw '.#ukci-${{ matrix.arch }}')" /nix/var/nix/gcroots/ukci-${{ matrix.arch }}
