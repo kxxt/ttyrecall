@@ -80,39 +80,7 @@ localFlake:
                 patch = ./patches/6.19-riscv64-fix-task-local-storage.patch;
               };
             in
-            (lib.optionals isTargetX86_64 [
-              {
-                name = "5.17";
-                tag = "5.17.15";
-                source = "mirror-v5";
-                test_exe = "ttyrecall";
-                sha256 = "sha256-ShySKkkO6r9bRNT9423pultxcRtzUsYlhxbaQRYNtig=";
-                kernelPatches = [
-                  {
-                    name = "pahole-compatibility-fix";
-                    patch = ./patches/5.17-Replace-scripts-pahole-flags.sh-with-the-one-in-5.15.patch;
-                  }
-                ];
-                extraMakeFlags = [ ];
-              }
-            ])
-            ++ (lib.optionals isTargetAarch64 [
-              {
-                name = "5.18";
-                tag = "5.18.19";
-                source = "mirror-v5";
-                test_exe = "ttyrecall";
-                sha256 = "sha256-3/CbJRcS+zs4fLTg97CXwO88e263+UqMmu5swCP8iNU=";
-                kernelPatches = [
-                  {
-                    name = "pahole-compatibility-fix";
-                    patch = ./patches/5.18-Replace-scripts-pahole-flags.sh-with-the-one-in.patch;
-                  }
-                ];
-                extraMakeFlags = [ ];
-              }
-            ])
-            ++ [
+            [
               {
                 name = "6.1lts";
                 tag = "6.1.168";
