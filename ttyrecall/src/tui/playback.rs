@@ -20,6 +20,7 @@ struct CastHeader {
 #[derive(Debug)]
 enum CastEvent {
     Output { time: f64, data: String },
+    Resize { time: f64, width: u16, height: u16 },
     Other { time: f64 },
 }
 
@@ -27,6 +28,7 @@ impl CastEvent {
     fn time(&self) -> f64 {
         match self {
             Self::Output { time, .. } => *time,
+            Self::Resize { time, .. } => *time,
             Self::Other { time } => *time,
         }
     }
@@ -71,28 +73,20 @@ impl Playback {
         let rows = header.height.unwrap_or(24).clamp(1, 200);
         let cols = header.width.unwrap_or(80).clamp(1, 400);
         let start_offset = normalize_time(start_at);
-        Ok(Self {
+        let now = Instant::now();
+        let mut playback = Self {
             title,
             error: None,
             events,
             next_event: 0,
-            started_at: start_instant(Instant::now(), start_offset),
+            started_at: now,
             parser: vt100::Parser::new(rows, cols, 0),
             parser_rows: rows,
             parser_cols: cols,
             start_offset,
-        })
-    }
-
-    pub(super) fn ensure_size(&mut self, rows: u16, cols: u16) {
-        let rows = rows.max(1);
-        let cols = cols.max(1);
-        if rows == self.parser_rows && cols == self.parser_cols {
-            return;
-        }
-        self.parser_rows = rows;
-        self.parser_cols = cols;
-        self.restart_at(Instant::now());
+        };
+        playback.seek_to(start_offset, now);
+        Ok(playback)
     }
 
     pub(super) fn tick(&mut self, now: Instant) {
@@ -100,18 +94,13 @@ impl Playback {
             return;
         }
 
-        let elapsed = now.duration_since(self.started_at).as_secs_f64();
+        let elapsed = self.elapsed_at(now);
         while let Some(event) = self.events.get(self.next_event) {
             let event_time = normalize_time(event.time());
             if event_time > elapsed {
                 break;
             }
-            match event {
-                CastEvent::Output { data, .. } => {
-                    self.parser.process(data.as_bytes());
-                }
-                CastEvent::Other { .. } => {}
-            }
+            self.apply_event(self.next_event);
             self.next_event += 1;
         }
 
@@ -145,9 +134,40 @@ impl Playback {
     }
 
     fn restart_at(&mut self, now: Instant) {
+        self.seek_to(self.start_offset, now);
+    }
+
+    fn seek_to(&mut self, target_time: f64, now: Instant) {
+        let target_time = normalize_time(target_time).min(self.last_event_time());
         self.parser = vt100::Parser::new(self.parser_rows, self.parser_cols, 0);
         self.next_event = 0;
-        self.started_at = start_instant(now, self.start_offset);
+        while self.next_event < self.events.len() {
+            let event_time = normalize_time(self.events[self.next_event].time());
+            if event_time > target_time {
+                break;
+            }
+            self.apply_event(self.next_event);
+            self.next_event += 1;
+        }
+        self.started_at = start_instant(now, target_time);
+    }
+
+    fn apply_event(&mut self, index: usize) {
+        match &self.events[index] {
+            CastEvent::Output { data, .. } => {
+                self.parser.process(data.as_bytes());
+            }
+            CastEvent::Resize { width, height, .. } => {
+                resize_parser(&mut self.parser, *width, *height);
+            }
+            CastEvent::Other { .. } => {}
+        }
+    }
+
+    fn elapsed_at(&self, now: Instant) -> f64 {
+        now.checked_duration_since(self.started_at)
+            .map(|elapsed| elapsed.as_secs_f64())
+            .unwrap_or(0.0)
     }
 
     fn last_event_time(&self) -> f64 {
@@ -212,8 +232,38 @@ fn parse_cast_event(line: &str) -> color_eyre::Result<CastEvent> {
                 .unwrap_or_default()
                 .to_string(),
         }),
+        "r" => {
+            let raw = arr
+                .get(2)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| color_eyre::eyre::eyre!("resize payload missing"))?;
+            let (width, height) = parse_size(raw)
+                .ok_or_else(|| color_eyre::eyre::eyre!("invalid resize payload: {raw}"))?;
+            Ok(CastEvent::Resize {
+                time,
+                width,
+                height,
+            })
+        }
         _ => Ok(CastEvent::Other { time }),
     }
+}
+
+fn parse_size(raw: &str) -> Option<(u16, u16)> {
+    let mut parts = raw.split('x');
+    let width = parts.next()?.parse().ok()?;
+    let height = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((width, height))
+}
+
+fn resize_parser(parser: &mut vt100::Parser, width: u16, height: u16) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    parser.set_size(height.clamp(1, 200), width.clamp(1, 400));
 }
 
 fn normalize_time(time: f64) -> f64 {
@@ -247,7 +297,14 @@ mod tests {
         assert_eq!(header.height, Some(24));
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], CastEvent::Output { .. }));
-        assert!(matches!(events[1], CastEvent::Other { .. }));
+        assert!(matches!(
+            events[1],
+            CastEvent::Resize {
+                width: 100,
+                height: 30,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -286,7 +343,8 @@ mod tests {
         assert_eq!(playback.next_event, 1);
 
         playback.tick(started_at + std::time::Duration::from_secs(2));
-        assert_eq!(playback.next_event, 0);
+        assert!(playback.screen_text().contains("first"));
+        assert_eq!(playback.next_event, 1);
     }
 
     #[test]
@@ -304,10 +362,34 @@ mod tests {
         )
         .unwrap();
 
-        let mut playback = Playback::load_at(path.clone(), "test".to_string(), 2.0).unwrap();
-        playback.tick(Instant::now());
+        let playback = Playback::load_at(path.clone(), "test".to_string(), 2.0).unwrap();
 
         assert!(playback.screen_text().contains("second"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn playback_start_offset_replays_resize_events_before_target() {
+        let path = std::env::temp_dir().join(format!(
+            "ttyrecall-playback-offset-resize-{}.cast",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            br#"{"version":2,"width":80,"height":24}
+[0.0,"r","6x2"]
+[0.1,"o","abcdef"]
+[2.0,"o","Z"]
+"#,
+        )
+        .unwrap();
+
+        let playback = Playback::load_at(path.clone(), "test".to_string(), 2.0).unwrap();
+        let screen = playback.screen().unwrap();
+
+        assert_eq!(screen.size(), (2, 6));
+        assert!(screen.contents().contains("abcdef"));
+        assert!(screen.contents().contains('Z'));
         let _ = std::fs::remove_file(path);
     }
 }

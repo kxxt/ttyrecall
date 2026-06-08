@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -331,19 +331,17 @@ fn draw_recordings(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: 
 fn draw_preview(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let inner_rows = area.height.saturating_sub(2).max(1);
     let inner_cols = area.width.saturating_sub(2).max(1);
-    app.playback.ensure_size(inner_rows, inner_cols);
 
     let block = Block::default()
         .title(format!(" Preview: {} ", app.playback.title))
         .borders(Borders::ALL);
-    let paragraph = Paragraph::new(preview_text(app))
+    let paragraph = Paragraph::new(preview_text(app, inner_rows, inner_cols))
         .block(block)
-        .style(Style::default().fg(Color::Rgb(211, 216, 217)))
-        .wrap(Wrap { trim: false });
+        .style(Style::default().fg(Color::Rgb(211, 216, 217)));
     frame.render_widget(paragraph, area);
 }
 
-fn preview_text(app: &App) -> Text<'static> {
+fn preview_text(app: &App, max_rows: u16, max_cols: u16) -> Text<'static> {
     let Some(screen) = app.playback.screen() else {
         return Text::from(app.playback.screen_text());
     };
@@ -352,6 +350,8 @@ fn preview_text(app: &App) -> Text<'static> {
     }
 
     let (rows, cols) = screen.size();
+    let rows = rows.min(max_rows);
+    let cols = cols.min(max_cols);
     let mut lines = Vec::with_capacity(rows as usize);
     for row in 0..rows {
         lines.push(preview_line(screen, row, cols));
