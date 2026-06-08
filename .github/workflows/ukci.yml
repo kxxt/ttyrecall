@@ -34,12 +34,31 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035
+      - &install-nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31
         with:
-          nix_conf: |
+          extra_nix_config: |
             keep-env-derivations = true
             keep-outputs = true
             http2 = false
+
+      - &attic-writable
+        name: Setup Attic cache (Writable)
+        uses: ryanccn/attic-action@5635a15ef0c5462194ffbd05d1daeddc74625c3a # v0.5.0
+        if: github.event.pull_request.head.repo.fork != true
+        with:
+          endpoint: https://nix.kxxt.dev
+          cache: ttyrecall
+          token: ${{ secrets.NIX_CACHE_JWT }}
+
+      - &attic-rdonly
+        name: Setup Attic cache (ReadOnly)
+        uses: ryanccn/attic-action@5635a15ef0c5462194ffbd05d1daeddc74625c3a # v0.5.0
+        if: github.event.pull_request.head.repo.fork == true
+        with:
+          endpoint: https://nix.kxxt.dev
+          cache: ttyrecall
+          skip-push: true
       - name: Run UKCI
         env:
           UKCI_SUMMARY_TITLE: UKCI (${{ matrix.os }})
@@ -55,12 +74,13 @@ jobs:
         arch: [riscv64]
     steps:
       - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035
-        with:
-          nix_conf: |
-            keep-env-derivations = true
-            keep-outputs = true
-            http2 = false
+
+      - *install-nix
+
+      - *attic-writable
+
+      - *attic-rdonly
+      
       - name: Run UKCI
         env:
           UKCI_SUMMARY_TITLE: UKCI (cross ${{ matrix.arch }})
