@@ -41,6 +41,14 @@ cargo xtask build --skip-frontend --release
 
 Use `--skip-frontend-deps` when dependencies are already prepared by your packaging environment and the build should not run `npm ci`.
 
+The libbpf backend vendors its own copy of libbpf by default. To link against the system libbpf instead, drop the default features:
+
+```bash
+cargo xtask build --release --no-default-features
+```
+
+`--no-default-features` keeps the backend selected by `--backend` enabled while dropping the vendored libbpf. Pass additional cargo features with `--features` (comma or space separated, repeatable), e.g. `--features static`. These flags are also accepted by `cargo xtask run`.
+
 Set env `ZSTD_SYS_USE_PKG_CONFIG=1` to dynamically link to system zstd library.
 
 ## Config

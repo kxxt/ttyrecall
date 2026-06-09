@@ -30,6 +30,15 @@ pub struct Options {
     /// Skip installing frontend dependencies before building
     #[clap(long)]
     pub skip_frontend_deps: bool,
+    /// Extra cargo features to activate for the userspace build, comma or space
+    /// separated. May be repeated. The backend feature is selected by
+    /// `--backend` and does not need to be listed here.
+    #[clap(long, value_delimiter = ',')]
+    pub features: Vec<String>,
+    /// Build the userspace binary without the crate's default cargo features
+    /// (e.g. to link against a system libbpf instead of the vendored one)
+    #[clap(long)]
+    pub no_default_features: bool,
     /// Arguments to pass to your application
     #[clap(name = "args", last = true)]
     pub run_args: Vec<String>,
@@ -45,6 +54,8 @@ pub fn run(opts: Options) -> Result<(), anyhow::Error> {
         disable_resource_saving: opts.disable_resource_saving,
         skip_frontend: opts.skip_frontend,
         skip_frontend_deps: opts.skip_frontend_deps,
+        features: opts.features.clone(),
+        no_default_features: opts.no_default_features,
     })
     .context("Error while building project")?;
 
