@@ -1,0 +1,3 @@
+[submodule "packaging/ttyrecall-git"]
+	path = packaging/ttyrecall-git
+	url = https://aur.archlinux.org/ttyrecall-git.git
