@@ -86,4 +86,4 @@ jobs:
           UKCI_SUMMARY_TITLE: UKCI (cross ${{ matrix.arch }})
         run: nix run ".#ukci-${{ matrix.arch }}"
       - name: Add gc root for UKCI
-        run: ln -s "$(nix eval --raw '.#ukci-${{ matrix.arch }}')" /nix/var/nix/gcroots/ukci-${{ matrix.arch }}
+        run: sudo ln -s "$(nix eval --raw '.#ukci-${{ matrix.arch }}')" /nix/var/nix/gcroots/ukci-${{ matrix.arch }}
