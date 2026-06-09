@@ -402,7 +402,67 @@ impl std::os::fd::AsRawFd for EventFd {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sshd_comm, should_resolve_sshd_owner};
+    use std::{collections::HashSet, fs, path::PathBuf, rc::Rc};
+
+    use ttyrecall_common::{
+        RawShortEvent, RawWriteChunkEvent, Size, WriteEventHead, RAW_EVENT_KIND_WRITE_CHUNK,
+    };
+
+    use super::{
+        is_sshd_comm, read_plain, should_resolve_sshd_owner, Daemon, Mode, SessionDispatcher,
+    };
+    use crate::{manager::Manager, session::PtySessionManager};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ttyrecall-daemon-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn dispatcher(root: &std::path::Path, mode: Mode, uids: HashSet<u32>) -> SessionDispatcher {
+        let manager = Rc::new(Manager::for_test(root.to_path_buf(), super::Compress::None));
+        SessionDispatcher::new(PtySessionManager::new(manager, None), mode, uids)
+    }
+
+    fn bytes_of<T>(value: &T) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(value).cast::<u8>(),
+                std::mem::size_of::<T>(),
+            )
+        }
+    }
+
+    fn comm(name: &str) -> [u8; 16] {
+        let mut comm = [0; 16];
+        comm[..name.len()].copy_from_slice(name.as_bytes());
+        comm
+    }
+
+    fn recording_contents(root: &std::path::Path) -> String {
+        fn collect(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, files);
+                } else if path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(".cast")
+                {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        collect(root, &mut files);
+        files.sort();
+        fs::read_to_string(files.first().unwrap()).unwrap()
+    }
 
     #[test]
     fn root_sshd_comms_need_owner_resolution() {
@@ -415,5 +475,146 @@ mod tests {
     fn sshd_comm_matches_openssh_variants() {
         assert!(is_sshd_comm("sshd-session"));
         assert!(!is_sshd_comm("sshd2"));
+    }
+
+    #[test]
+    fn escape_comm_stops_at_nul_and_sanitizes_slashes() {
+        assert_eq!(Daemon::escape_comm(comm("bash")), "bash");
+        assert_eq!(Daemon::escape_comm(comm("foo/bar")), "foo_bar");
+
+        let mut raw = [0; 16];
+        raw[..8].copy_from_slice(b"cmd\0tail");
+        assert_eq!(Daemon::escape_comm(raw), "cmd");
+    }
+
+    #[test]
+    fn read_plain_reads_unaligned_struct_bytes() {
+        let raw = RawShortEvent::pty_remove(1000, 7, 99);
+        let mut bytes = vec![0u8];
+        bytes.extend_from_slice(bytes_of(&raw));
+
+        let decoded = read_plain::<RawShortEvent>(&bytes[1..]);
+
+        assert_eq!(decoded.uid, 1000);
+        assert_eq!(decoded.id, 7);
+        assert_eq!(decoded.time, 99);
+    }
+
+    #[test]
+    fn session_dispatcher_respects_blocklist_and_allowlist() {
+        let root = temp_root("policy");
+        let uid = nix::unistd::Uid::current().as_raw();
+        let other_uid = uid.saturating_add(1);
+        let mut block = dispatcher(&root, Mode::BlockList, HashSet::from([other_uid]));
+        block
+            .add_session(1, other_uid, "bash".to_string(), 1_000)
+            .unwrap();
+        assert!(!block.manager.exists(1));
+
+        block
+            .add_session(2, uid, "bash".to_string(), 1_000)
+            .unwrap();
+        assert!(block.manager.exists(2));
+
+        let mut allow = dispatcher(&root, Mode::AllowList, HashSet::from([uid]));
+        allow
+            .add_session(3, other_uid, "bash".to_string(), 1_000)
+            .unwrap();
+        assert!(!allow.manager.exists(3));
+        allow
+            .add_session(4, uid, "bash".to_string(), 1_000)
+            .unwrap();
+        assert!(allow.manager.exists(4));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn handle_event_records_short_and_write_chunk_events() {
+        let root = temp_root("write-chunk");
+        {
+            let uid = nix::unistd::Uid::current().as_raw();
+            let mut sessions = dispatcher(&root, Mode::BlockList, HashSet::new());
+            let install = RawShortEvent::pty_install(uid, 7, 1_000, comm("bash"));
+            Daemon::handle_event(bytes_of(&install), &mut sessions).unwrap();
+            let resize = RawShortEvent::pty_resize(
+                uid,
+                7,
+                2_000,
+                Size {
+                    width: 80,
+                    height: 24,
+                },
+            );
+            Daemon::handle_event(bytes_of(&resize), &mut sessions).unwrap();
+
+            let mut write = RawWriteChunkEvent {
+                time: 3_000,
+                id: 7,
+                kind: RAW_EVENT_KIND_WRITE_CHUNK,
+                len: 5,
+                ..RawWriteChunkEvent::default()
+            };
+            write.data[..5].copy_from_slice(b"hello");
+            Daemon::handle_event(bytes_of(&write), &mut sessions).unwrap();
+
+            let remove = RawShortEvent::pty_remove(uid, 7, 4_000);
+            Daemon::handle_event(bytes_of(&remove), &mut sessions).unwrap();
+        }
+
+        assert!(recording_contents(&root).contains("hello"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn handle_event_records_legacy_write_event_payload() {
+        let root = temp_root("legacy-write");
+        {
+            let uid = nix::unistd::Uid::current().as_raw();
+            let mut sessions = dispatcher(&root, Mode::BlockList, HashSet::new());
+            let install = RawShortEvent::pty_install(uid, 8, 1_000, comm("bash"));
+            Daemon::handle_event(bytes_of(&install), &mut sessions).unwrap();
+            let resize = RawShortEvent::pty_resize(
+                uid,
+                8,
+                2_000,
+                Size {
+                    width: 80,
+                    height: 24,
+                },
+            );
+            Daemon::handle_event(bytes_of(&resize), &mut sessions).unwrap();
+
+            let head = WriteEventHead {
+                time: 3_000,
+                id: 8,
+                ..WriteEventHead::default()
+            };
+            let mut bytes = bytes_of(&head).to_vec();
+            bytes.extend_from_slice(b"legacy");
+            Daemon::handle_event(&bytes, &mut sessions).unwrap();
+
+            let remove = RawShortEvent::pty_remove(uid, 8, 4_000);
+            Daemon::handle_event(bytes_of(&remove), &mut sessions).unwrap();
+        }
+
+        assert!(recording_contents(&root).contains("legacy"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn handle_event_ignores_unknown_or_too_short_events() {
+        let root = temp_root("invalid-events");
+        let mut sessions = dispatcher(&root, Mode::BlockList, HashSet::new());
+
+        let unknown = RawShortEvent {
+            kind: 99,
+            ..RawShortEvent::default()
+        };
+        Daemon::handle_event(bytes_of(&unknown), &mut sessions).unwrap();
+        Daemon::handle_event(&[1, 2, 3], &mut sessions).unwrap();
+
+        assert!(fs::read_dir(&root).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(root);
     }
 }

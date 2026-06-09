@@ -162,3 +162,89 @@ pub const RECALL_CONFIG_INDEX_MODE: u32 = 0;
 
 pub const RECALL_CONFIG_MODE_BLOCKLIST: u64 = 0;
 pub const RECALL_CONFIG_MODE_ALLOWLIST: u64 = 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_is_zero_only_when_both_dimensions_are_zero() {
+        assert!(Size {
+            width: 0,
+            height: 0
+        }
+        .is_zero());
+        assert!(!Size {
+            width: 80,
+            height: 0
+        }
+        .is_zero());
+        assert!(!Size {
+            width: 0,
+            height: 24
+        }
+        .is_zero());
+    }
+
+    #[test]
+    fn raw_short_event_constructors_round_trip() {
+        let mut comm = [0; 16];
+        comm[..4].copy_from_slice(b"bash");
+
+        let install = RawShortEvent::pty_install(1000, 7, 42, comm)
+            .short_event()
+            .unwrap();
+        assert_eq!(install.uid, 1000);
+        assert_eq!(install.id, 7);
+        assert_eq!(install.time, 42);
+        assert!(matches!(
+            install.kind,
+            EventKind::PtyInstall { comm: actual } if actual == comm
+        ));
+
+        let resize = RawShortEvent::pty_resize(
+            1000,
+            7,
+            43,
+            Size {
+                width: 120,
+                height: 40,
+            },
+        )
+        .short_event()
+        .unwrap();
+        assert!(matches!(
+            resize.kind,
+            EventKind::PtyResize {
+                size: Size {
+                    width: 120,
+                    height: 40
+                }
+            }
+        ));
+
+        let remove = RawShortEvent::pty_remove(1000, 7, 44)
+            .short_event()
+            .unwrap();
+        assert!(matches!(remove.kind, EventKind::PtyRemove));
+    }
+
+    #[test]
+    fn unknown_raw_short_event_kind_is_ignored() {
+        let raw = RawShortEvent {
+            kind: 99,
+            ..RawShortEvent::default()
+        };
+
+        assert!(raw.short_event().is_none());
+    }
+
+    #[test]
+    fn raw_write_chunk_default_identifies_write_chunks() {
+        let raw = RawWriteChunkEvent::default();
+
+        assert_eq!(raw.kind, RAW_EVENT_KIND_WRITE_CHUNK);
+        assert_eq!(raw.len, 0);
+        assert_eq!(raw.data.len(), RAW_WRITE_CHUNK_SIZE);
+    }
+}

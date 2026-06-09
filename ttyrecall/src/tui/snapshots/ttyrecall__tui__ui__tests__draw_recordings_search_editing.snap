@@ -1,0 +1,34 @@
+---
+source: ttyrecall/src/tui/ui.rs
+expression: snapshot
+---
+┌ Activity: alice | filter $DATE ───┐┌ Preview: Preview ──────────────────────────────────────┐
+│$DATE to $DATE                ││Select a recording to preview it here.                  │
+│Sun                                     ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│Wed                                     ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│Sat                                 []  ││                                                        │
+└────────────────────────────────────────┘│                                                        │
+┌ Search: needle ────────────────────────┐│                                                        │
+│> first.cast $DATE 2.0 KB          ││                                                        │
+│  second.cast $DATE 2.0 KB         ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Ready |  q quit  / search  esc clear search  d delete  c clear filter  click/drag resize  ctrl-left/

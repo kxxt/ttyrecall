@@ -46,3 +46,6 @@ vt100 = "0.15.2"
 [[bin]]
 name = "ttyrecall"
 path = "src/main.rs"
+
+[dev-dependencies]
+insta = "1.46.3"

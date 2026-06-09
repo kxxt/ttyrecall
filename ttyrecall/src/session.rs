@@ -421,6 +421,20 @@ mod test {
         session
     }
 
+    fn only_recording_content(root: &Path) -> String {
+        let files = recording_files(&root.to_path_buf());
+        let final_path = files
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(".cast")
+            })
+            .unwrap();
+        String::from_utf8(read_cast_bytes(final_path).unwrap()).unwrap()
+    }
+
     #[test]
     fn session_publishes_recording_only_after_drop() {
         let root = temp_root("publish-on-drop");
@@ -468,6 +482,180 @@ mod test {
 
         let content = String::from_utf8(read_cast_bytes(&final_path).unwrap()).unwrap();
         assert!(content.contains("hello from unfinished recording"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resize_flushes_staged_metadata_and_writes() {
+        let root = temp_root("resize-flush");
+        {
+            let manager = Rc::new(Manager::for_test(root.clone(), Compress::None));
+            let uid = Uid::current().as_raw();
+            let mut sessions = PtySessionManager::new(manager, None);
+
+            sessions
+                .add_session(3, uid, "bash".to_string(), 1_000)
+                .unwrap();
+            sessions
+                .write_to(3, "before resize", 1_001_000_000)
+                .unwrap();
+            sessions
+                .resize_session(
+                    3,
+                    1_002_000_000,
+                    Size {
+                        width: 100,
+                        height: 30,
+                    },
+                )
+                .unwrap();
+            sessions.write_to(3, "after resize", 1_003_000_000).unwrap();
+            sessions.remove_session(3);
+        }
+
+        let content = only_recording_content(&root);
+        assert!(content.contains(r#""width": 100, "height": 30"#));
+        assert!(content.contains("before resize"));
+        assert!(content.contains("after resize"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn zero_size_resize_does_not_flush_staged_events() {
+        let root = temp_root("zero-resize");
+        {
+            let manager = Rc::new(Manager::for_test(root.clone(), Compress::None));
+            let uid = Uid::current().as_raw();
+            let mut sessions = PtySessionManager::new(manager, None);
+
+            sessions
+                .add_session(4, uid, "bash".to_string(), 1_000)
+                .unwrap();
+            sessions
+                .resize_session(
+                    4,
+                    1_001_000_000,
+                    Size {
+                        width: 0,
+                        height: 0,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                sessions.sessions.get(&4).unwrap().staged_event_count(),
+                Some(1)
+            );
+            sessions.remove_session(4);
+        }
+
+        let content = only_recording_content(&root);
+        assert!(content.contains(r#""width": 0, "height": 0"#));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manager_rejects_duplicate_and_missing_sessions() {
+        let root = temp_root("errors");
+        let manager = Rc::new(Manager::for_test(root.clone(), Compress::None));
+        let uid = Uid::current().as_raw();
+        let mut sessions = PtySessionManager::new(manager, None);
+
+        sessions
+            .add_session(5, uid, "bash".to_string(), 1_000)
+            .unwrap();
+        assert!(sessions
+            .add_session(5, uid, "bash".to_string(), 1_000)
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+        assert!(sessions
+            .write_to(99, "missing", 1_000)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist"));
+        assert!(sessions
+            .resize_session(
+                99,
+                1_000,
+                Size {
+                    width: 80,
+                    height: 24
+                }
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist"));
+
+        sessions.remove_session(5);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staged_buffer_flushes_after_event_limit() {
+        let root = temp_root("staged-limit");
+        {
+            let manager = Rc::new(Manager::for_test(root.clone(), Compress::None));
+            let uid = Uid::current().as_raw();
+            let mut sessions = PtySessionManager::new(manager, None);
+
+            sessions
+                .add_session(6, uid, "bash".to_string(), 1_000)
+                .unwrap();
+            for i in 0..STAGED_EVENT_MAX {
+                sessions
+                    .write_to(6, &format!("event-{i} "), 1_001_000_000 + i as u64)
+                    .unwrap();
+            }
+            assert!(sessions
+                .sessions
+                .get(&6)
+                .unwrap()
+                .staged_event_count()
+                .is_none());
+            sessions.write_to(6, "after flush", 2_000_000_000).unwrap();
+            sessions.remove_session(6);
+        }
+
+        let content = only_recording_content(&root);
+        assert!(content.contains("event-0"));
+        assert!(content.contains("after flush"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn budget_overrun_removes_session() {
+        let root = temp_root("budget");
+        {
+            let manager = Rc::new(Manager::for_test(root.clone(), Compress::None));
+            let uid = Uid::current().as_raw();
+            let mut sessions = PtySessionManager::new(manager, Some(NonZeroUsize::new(1).unwrap()));
+
+            sessions
+                .add_session(7, uid, "bash".to_string(), 1_000)
+                .unwrap();
+            sessions
+                .resize_session(
+                    7,
+                    1_001_000_000,
+                    Size {
+                        width: 80,
+                        height: 24,
+                    },
+                )
+                .unwrap();
+            sessions
+                .write_to(7, &"x".repeat(16 * 1024), 1_002_000_000)
+                .unwrap();
+            sessions
+                .write_to(7, "trigger budget check", 1_003_000_000)
+                .unwrap();
+
+            assert!(!sessions.exists(7));
+        }
+
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -111,3 +111,81 @@ impl CastCache {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_state_new_populates_runtime_fields() {
+        let index = Arc::new(StdRwLock::new(RecordingIndex::default()));
+        let search = RipgrepSearchConfig {
+            ripgrep_path: "rg".to_string(),
+            max_results: 25,
+        };
+
+        let state = AppState::new(
+            PathBuf::from("/tmp/ttyrecall"),
+            index.clone(),
+            "login".to_string(),
+            Duration::from_secs(30),
+            Some(SingleUser {
+                uid: 1000,
+                username: "alice".to_string(),
+            }),
+            PathBuf::from("/tmp/frontend"),
+            Some("token".to_string()),
+            true,
+            search.clone(),
+        );
+
+        assert_eq!(state.storage_root, PathBuf::from("/tmp/ttyrecall"));
+        assert!(Arc::ptr_eq(&state.recording_index, &index));
+        assert_eq!(state.pam_service, "login");
+        assert_eq!(state.session_ttl, Duration::from_secs(30));
+        assert_eq!(state.single_user.unwrap().username, "alice");
+        assert_eq!(state.frontend_root, PathBuf::from("/tmp/frontend"));
+        assert_eq!(state.single_user_token.as_deref(), Some("token"));
+        assert!(state.search_enabled);
+        assert_eq!(state.search.ripgrep_path, search.ripgrep_path);
+        assert_eq!(state.search.max_results, search.max_results);
+    }
+
+    #[test]
+    fn cast_cache_hits_only_when_mtime_matches() {
+        let mut cache = CastCache::default();
+        let path = PathBuf::from("/tmp/a.cast");
+        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+
+        cache.insert(path.clone(), mtime, b"first".to_vec());
+
+        assert_eq!(cache.get(&path, mtime), Some(b"first".to_vec()));
+        assert_eq!(
+            cache.get(&path, SystemTime::UNIX_EPOCH + Duration::from_secs(2)),
+            None
+        );
+        assert!(!cache.entries.contains_key(&path));
+    }
+
+    #[test]
+    fn cast_cache_evicts_least_recently_used_entry() {
+        let mut cache = CastCache::default();
+        let mtime = SystemTime::UNIX_EPOCH;
+        let first = PathBuf::from("/tmp/first.cast");
+        cache.insert(first.clone(), mtime, b"first".to_vec());
+
+        for i in 0..super::super::recordings::CAST_CACHE_MAX_ENTRIES {
+            cache.insert(
+                PathBuf::from(format!("/tmp/{i}.cast")),
+                mtime,
+                vec![i as u8],
+            );
+        }
+
+        assert_eq!(
+            cache.entries.len(),
+            super::super::recordings::CAST_CACHE_MAX_ENTRIES
+        );
+        assert!(!cache.entries.contains_key(&first));
+    }
+}

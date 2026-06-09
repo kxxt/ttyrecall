@@ -599,6 +599,106 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, RwLock as StdRwLock};
+
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use crate::{
+        catalog::{HeatmapDay, RecordingIndex, RecordingInfo},
+        search::RipgrepSearchConfig,
+        tui::playback::Playback,
+    };
+
+    fn recording(id: &str, date: &str) -> RecordingInfo {
+        RecordingInfo {
+            id: id.to_string(),
+            name: format!("{id}.cast"),
+            display: format!("{date} 10:30"),
+            date: date.to_string(),
+            size: 2048,
+            compressed: false,
+        }
+    }
+
+    fn app_for_draw() -> App {
+        let mut app = App::new(
+            std::env::temp_dir(),
+            1000,
+            "alice".to_string(),
+            Arc::new(StdRwLock::new(RecordingIndex::default())),
+            true,
+            RipgrepSearchConfig {
+                ripgrep_path: "rg".to_string(),
+                max_results: 50,
+            },
+        );
+        app.recordings = vec![
+            recording("first", "2026-06-06"),
+            recording("second", "2026-06-05"),
+        ];
+        app.heatmap = vec![HeatmapDay {
+            date: "2026-06-06".to_string(),
+            count: 2,
+        }];
+        app.status = "Ready".to_string();
+        app
+    }
+
+    fn rendered_app(width: u16, height: u16, mut app: App) -> (String, ClickMap) {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut click_map = ClickMap::default();
+
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut click_map))
+            .unwrap();
+
+        (snapshot_buffer(terminal.backend().buffer()), click_map)
+    }
+
+    fn snapshot_buffer(buffer: &ratatui::buffer::Buffer) -> String {
+        let width = buffer.area().width as usize;
+        buffer
+            .content()
+            .chunks(width)
+            .map(|row| {
+                let line = row
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string();
+                normalize_snapshot_dates(&line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn normalize_snapshot_dates(line: &str) -> String {
+        let mut normalized = String::with_capacity(line.len());
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        while index < line.len() {
+            if index + 10 <= line.len() && is_date_like(&bytes[index..index + 10]) {
+                normalized.push_str("$DATE");
+                index += 10;
+            } else {
+                let ch = line[index..].chars().next().unwrap();
+                normalized.push(ch);
+                index += ch.len_utf8();
+            }
+        }
+        normalized
+    }
+
+    fn is_date_like(bytes: &[u8]) -> bool {
+        bytes.len() == 10
+            && bytes[0..4].iter().all(u8::is_ascii_digit)
+            && bytes[4] == b'-'
+            && bytes[5..7].iter().all(u8::is_ascii_digit)
+            && bytes[7] == b'-'
+            && bytes[8..10].iter().all(u8::is_ascii_digit)
+    }
 
     #[test]
     fn formats_byte_counts() {
@@ -662,5 +762,112 @@ mod tests {
     fn visible_heatmap_weeks_respects_label_width() {
         assert_eq!(visible_heatmap_weeks(4), 0);
         assert_eq!(visible_heatmap_weeks(10), 3);
+    }
+
+    #[test]
+    fn draw_registers_click_targets_in_wide_layout() {
+        let (snapshot, click_map) = rendered_app(120, 40, app_for_draw());
+        insta::assert_snapshot!(snapshot);
+
+        assert!(click_map
+            .resize_geometry(ResizeTarget::MainSplit)
+            .is_some_and(|geometry| geometry.direction == Direction::Horizontal));
+        assert!(click_map
+            .resize_geometry(ResizeTarget::HeatmapSplit)
+            .is_some_and(|geometry| geometry.direction == Direction::Vertical));
+        assert!(matches!(
+            click_map.hit_test(1, 11),
+            Some(ClickTarget::RecordingRow(0))
+        ));
+        assert!(click_map.is_heatmap(1, 1));
+    }
+
+    #[test]
+    fn draw_uses_vertical_main_split_on_narrow_layout() {
+        let (snapshot, click_map) = rendered_app(80, 32, app_for_draw());
+        insta::assert_snapshot!(snapshot);
+
+        assert!(click_map
+            .resize_geometry(ResizeTarget::MainSplit)
+            .is_some_and(|geometry| geometry.direction == Direction::Vertical));
+    }
+
+    #[test]
+    fn draw_renders_delete_confirmation_popup() {
+        let mut app = app_for_draw();
+        app.delete_confirmation = Some(super::super::app::DeleteConfirmation {
+            recording: recording("delete-me", "2026-06-06"),
+            dont_ask_again: true,
+        });
+
+        let (snapshot, _) = rendered_app(100, 30, app);
+        insta::assert_snapshot!(snapshot);
+    }
+
+    #[test]
+    fn preview_text_uses_error_and_plain_fallbacks() {
+        let mut app = app_for_draw();
+        app.playback = Playback::error("bad".to_string(), "load failed".to_string());
+        assert_eq!(
+            preview_text(&app, 10, 10).lines[0].spans[0].content,
+            "load failed"
+        );
+
+        app.playback = Playback::empty();
+        assert!(preview_text(&app, 10, 10).lines[0].spans[0]
+            .content
+            .contains("Select a recording"));
+    }
+
+    #[test]
+    fn preview_line_splits_spans_when_style_changes() {
+        let mut parser = vt100::Parser::new(1, 4, 0);
+        parser.process(b"A\x1b[31mB");
+
+        let line = preview_line(parser.screen(), 0, 4);
+
+        assert!(line.spans.len() >= 2);
+        assert_eq!(line.spans[0].content, "A");
+        assert_eq!(line.spans[1].content, "B");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Indexed(1)));
+    }
+
+    #[test]
+    fn centered_rect_clamps_to_parent_area() {
+        let area = Rect::new(10, 20, 30, 10);
+
+        assert_eq!(centered_rect(10, 4, area), Rect::new(20, 23, 10, 4));
+        assert_eq!(centered_rect(100, 100, area), area);
+    }
+
+    #[test]
+    fn contains_checks_rect_bounds() {
+        let area = Rect::new(2, 3, 4, 5);
+
+        assert!(contains(area, 2, 3));
+        assert!(contains(area, 5, 7));
+        assert!(!contains(area, 6, 7));
+        assert!(!contains(area, 5, 8));
+    }
+
+    #[test]
+    fn draw_recordings_titles_reflect_search_and_date_modes() {
+        let mut app = app_for_draw();
+        app.date_filter = Some("2026-06-06".to_string());
+        app.search_mode = SearchMode::Editing;
+        app.search_query = "needle".to_string();
+
+        let (snapshot, _) = rendered_app(100, 30, app);
+        insta::assert_snapshot!("draw_recordings_search_editing", snapshot);
+
+        let mut app = app_for_draw();
+        app.date_filter = Some("2026-06-06".to_string());
+        app.search_mode = SearchMode::Results;
+        app.recordings = vec![recording("match", "2026-06-06")];
+        app.selected = 0;
+        app.status.clear();
+
+        let (snapshot, _) = rendered_app(100, 30, app);
+        insta::assert_snapshot!("draw_recordings_search_results", snapshot);
     }
 }

@@ -163,3 +163,77 @@ fn display_bind(bind: &str) -> String {
     }
     bind.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn config() -> WebConfig {
+        WebConfig {
+            bind: "0.0.0.0:8450".to_string(),
+            root: PathBuf::from("/var/lib/ttyrecall"),
+            pam_service: "login".to_string(),
+            session_ttl: Duration::from_secs(60),
+            frontend_root: PathBuf::from("/tmp/frontend"),
+            single_user_token: None,
+            single_user_uid: None,
+            single_user_username: None,
+            search_enabled: false,
+            search: RipgrepSearchConfig {
+                ripgrep_path: "rg".to_string(),
+                max_results: 50,
+            },
+        }
+    }
+
+    #[test]
+    fn resolve_single_user_uses_mode_values_and_config_overrides() {
+        let mode = WebMode::SingleUser {
+            uid: 1000,
+            username: "alice".to_string(),
+        };
+        let mut config = config();
+        config.single_user_uid = Some(2000);
+        config.single_user_username = Some("bob".to_string());
+
+        let single_user = resolve_single_user(&mode, &config).unwrap().unwrap();
+
+        assert_eq!(single_user.uid, 2000);
+        assert_eq!(single_user.username, "bob");
+    }
+
+    #[test]
+    fn resolve_single_user_returns_none_for_service_mode() {
+        assert!(resolve_single_user(&WebMode::Service, &config())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn prepare_single_user_token_only_for_single_user_mode() {
+        let mut config = config();
+        config.single_user_token = Some("configured-token".to_string());
+
+        assert_eq!(
+            prepare_single_user_token(
+                &WebMode::SingleUser {
+                    uid: 1000,
+                    username: "alice".to_string()
+                },
+                &config
+            )
+            .as_deref(),
+            Some("configured-token")
+        );
+        assert!(prepare_single_user_token(&WebMode::Service, &config).is_none());
+    }
+
+    #[test]
+    fn display_bind_maps_wildcard_addresses_to_loopback() {
+        assert_eq!(display_bind("0.0.0.0:8450"), "127.0.0.1:8450");
+        assert_eq!(display_bind("[::]:8450"), "127.0.0.1:8450");
+        assert_eq!(display_bind("127.0.0.1:9000"), "127.0.0.1:9000");
+    }
+}

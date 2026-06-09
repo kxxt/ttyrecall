@@ -166,3 +166,129 @@ fn default_excluded_comms() -> HashSet<Comm> {
         Comm::from_name("asciinema").expect("static comm is valid"),
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_config_from_file_uses_defaults_and_overrides() {
+        let config = DaemonConfig::from_file("/var/lib/ttyrecall".to_string(), None);
+
+        assert_eq!(config.root, "/var/lib/ttyrecall");
+        assert_eq!(config.uids, HashSet::from([0]));
+        assert!(matches!(config.mode, Mode::BlockList));
+        assert!(matches!(config.compress, Compress::Zstd(None)));
+        assert_eq!(config.soft_budget, 52_428_800);
+        assert!(config
+            .excluded_comms
+            .contains(&Comm::from_name("sudo").unwrap()));
+
+        let override_config = DaemonConfigFile {
+            users: Some(HashSet::from(["alice".to_string()])),
+            uids: Some(HashSet::from([1000])),
+            mode: Some(Mode::AllowList),
+            compress: Some(Compress::None),
+            excluded_comms: Some(HashSet::from([Comm::from_name("bash").unwrap()])),
+            soft_budget: Some(42),
+        };
+        let config = DaemonConfig::from_file("/tmp/ttyrecall".to_string(), Some(override_config));
+
+        assert_eq!(config.users, HashSet::from(["alice".to_string()]));
+        assert_eq!(config.uids, HashSet::from([1000]));
+        assert!(matches!(config.mode, Mode::AllowList));
+        assert!(matches!(config.compress, Compress::None));
+        assert_eq!(
+            config.excluded_comms,
+            HashSet::from([Comm::from_name("bash").unwrap()])
+        );
+        assert_eq!(config.soft_budget, 42);
+    }
+
+    #[test]
+    fn daemon_config_file_merge_preserves_base_when_override_missing() {
+        let base = DaemonConfigFile {
+            users: Some(HashSet::from(["alice".to_string()])),
+            uids: Some(HashSet::from([1000])),
+            mode: Some(Mode::BlockList),
+            compress: Some(Compress::Zstd(Some(3))),
+            excluded_comms: Some(HashSet::from([Comm::from_name("sudo").unwrap()])),
+            soft_budget: Some(100),
+        };
+        let override_config = DaemonConfigFile {
+            users: None,
+            uids: Some(HashSet::from([2000])),
+            mode: Some(Mode::AllowList),
+            compress: None,
+            excluded_comms: None,
+            soft_budget: Some(200),
+        };
+
+        let merged = base.merge(override_config);
+
+        assert_eq!(merged.users.unwrap(), HashSet::from(["alice".to_string()]));
+        assert_eq!(merged.uids.unwrap(), HashSet::from([2000]));
+        assert!(matches!(merged.mode.unwrap(), Mode::AllowList));
+        assert!(matches!(merged.compress.unwrap(), Compress::Zstd(Some(3))));
+        assert_eq!(
+            merged.excluded_comms.unwrap(),
+            HashSet::from([Comm::from_name("sudo").unwrap()])
+        );
+        assert_eq!(merged.soft_budget, Some(200));
+    }
+
+    #[test]
+    fn compress_display_and_deserialize_accept_valid_values() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            compress: Compress,
+        }
+
+        assert_eq!(Compress::None.to_string(), "none");
+        assert_eq!(Compress::Zstd(None).to_string(), "zstd");
+        assert_eq!(Compress::Zstd(Some(9)).to_string(), "zstd:9");
+
+        assert!(matches!(
+            toml::from_str::<Wrapper>(r#"compress = "none""#)
+                .unwrap()
+                .compress,
+            Compress::None
+        ));
+        assert!(matches!(
+            toml::from_str::<Wrapper>(r#"compress = "zstd""#)
+                .unwrap()
+                .compress,
+            Compress::Zstd(None)
+        ));
+        assert!(matches!(
+            toml::from_str::<Wrapper>(r#"compress = "zstd:22""#)
+                .unwrap()
+                .compress,
+            Compress::Zstd(Some(22))
+        ));
+    }
+
+    #[test]
+    fn compress_deserialize_rejects_invalid_values() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[allow(dead_code)]
+            compress: Compress,
+        }
+
+        assert!(toml::from_str::<Wrapper>(r#"compress = "gzip""#).is_err());
+        assert!(toml::from_str::<Wrapper>(r#"compress = "zstd:0""#).is_err());
+        assert!(toml::from_str::<Wrapper>(r#"compress = "zstd:23""#).is_err());
+        assert!(toml::from_str::<Wrapper>(r#"compress = "zstd:fast""#).is_err());
+    }
+
+    #[test]
+    fn comm_from_name_pads_and_rejects_long_names() {
+        let comm = Comm::from_name("bash").unwrap();
+
+        assert_eq!(&comm.0[..4], b"bash");
+        assert!(comm.0[4..].iter().all(|byte| *byte == 0));
+        assert!(Comm::from_name("123456789012345").is_ok());
+        assert!(Comm::from_name("1234567890123456").is_err());
+    }
+}
