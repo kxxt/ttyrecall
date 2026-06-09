@@ -6,14 +6,20 @@ license = "AGPL-3.0-or-later"
 publish = false
 
 [features]
-default = ["ebpf-libbpf"]
+recommended = ["ebpf-libbpf"]
+default = ["ebpf-libbpf", "vendored-libbpf"]
+static = ["libbpf-sys?/static"]
+vendored = ["libbpf-sys?/vendored", "vendored-libbpf"]
+vendored-libbpf = ["libbpf-sys?/vendored-libbpf"]
 ebpf-aya = ["dep:aya", "dep:aya-log"]
 ebpf-libbpf = ["dep:libbpf-rs"]
 
 [dependencies]
 aya = { version = "0.12", features = ["async_tokio"], optional = true }
 aya-log = { version = "0.2", optional = true }
-libbpf-rs = { version = "0.26.2", optional = true }
+libbpf-rs = { version = "0.26.2", optional = true, default-features = false }
+# We only need to override its features
+libbpf-sys = { version = "*", optional = true }
 ttyrecall-common = { path = "../ttyrecall-common", features = ["user"] }
 env_logger = "0.10"
 libc = "0.2"

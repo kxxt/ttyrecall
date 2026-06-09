@@ -2689,6 +2689,7 @@ dependencies = [
  "inotify",
  "insta",
  "libbpf-rs",
+ "libbpf-sys",
  "libc",
  "log",
  "nix 0.29.0",
