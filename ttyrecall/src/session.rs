@@ -363,7 +363,10 @@ impl Write for MeasuredFile {
 
 #[cfg(test)]
 mod test {
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use nix::unistd::Uid;
 
@@ -400,8 +403,8 @@ mod test {
         }
     }
 
-    fn write_test_session(root: &PathBuf, compress: Compress) -> PtySession {
-        let manager = Manager::for_test(root.clone(), compress);
+    fn write_test_session(root: &Path, compress: Compress) -> PtySession {
+        let manager = Manager::for_test(root.to_owned(), compress);
         let uid = Uid::current().as_raw();
         let mut session = PtySession::new(&manager, 7, uid, "bash".to_string(), 1_000).unwrap();
         session.stage_event(StagedEvent::Metadata {

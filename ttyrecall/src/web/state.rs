@@ -46,6 +46,7 @@ pub(super) struct CastCache {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         storage_root: PathBuf,
         recording_index: Arc<StdRwLock<RecordingIndex>>,
