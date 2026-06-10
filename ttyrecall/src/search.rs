@@ -10,6 +10,8 @@ use crate::catalog::{
     is_recording_file_name, recording_id_for_rel_path, recording_info, storage_rel_path,
 };
 
+pub(crate) const MAX_SEARCH_QUERY_LEN: usize = 256;
+
 #[derive(Debug, Clone)]
 pub(crate) struct RipgrepSearchConfig {
     pub(crate) ripgrep_path: String,
@@ -60,6 +62,12 @@ pub(crate) fn search_recordings(
     if query.is_empty() {
         return Ok(Vec::new());
     }
+    if query.len() > MAX_SEARCH_QUERY_LEN {
+        bail!(
+            "search query is too long; maximum length is {} bytes",
+            MAX_SEARCH_QUERY_LEN
+        );
+    }
 
     let user_root = storage_root.join(uid.to_string());
     if !user_root.is_dir() {
@@ -68,6 +76,7 @@ pub(crate) fn search_recordings(
 
     let output = Command::new(&config.ripgrep_path)
         .arg("--json")
+        .arg("--no-config")
         .arg("--fixed-strings")
         .arg("--ignore-case")
         .arg("--no-heading")
@@ -77,6 +86,7 @@ pub(crate) fn search_recordings(
         .arg("*.cast")
         .arg("-g")
         .arg("*.cast.zst")
+        .arg("--")
         .arg(query)
         .arg(&user_root)
         .output()
@@ -297,6 +307,23 @@ mod tests {
         assert_eq!(results[0].timestamp_ms, 2500);
         assert!(results[0].compressed);
         assert_eq!(results[0].text, "needle in compressed output");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_rejects_option_like_and_oversized_queries() {
+        let root = temp_root("query-validation");
+        let recording = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
+        write_file(&recording, r#"{"version":2}"#);
+        let config = RipgrepSearchConfig {
+            ripgrep_path: "rg".to_string(),
+            max_results: 10,
+        };
+
+        let long_query = "a".repeat(MAX_SEARCH_QUERY_LEN + 1);
+        let err = search_recordings(&root, 1000, &long_query, &config).unwrap_err();
+        assert!(err.to_string().contains("too long"));
 
         let _ = std::fs::remove_dir_all(root);
     }
