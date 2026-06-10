@@ -1,11 +1,18 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    fs::File,
+    io::{self, Read},
+    os::unix::ffi::OsStrExt,
+    path::{Component, Path, PathBuf},
 };
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::NaiveDate;
+use pathrs::{
+    flags::{OpenFlags, ResolverFlags},
+    Root,
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -16,6 +23,23 @@ pub(crate) struct RecordingInfo {
     pub(crate) date: String,
     pub(crate) size: u64,
     pub(crate) compressed: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct RecordingFile {
+    pub(crate) path: PathBuf,
+    pub(crate) file: File,
+}
+
+impl RecordingFile {
+    pub(crate) fn compressed(&self) -> bool {
+        self.path.extension().and_then(|s| s.to_str()) == Some("zst")
+    }
+
+    pub(crate) fn read_cast_bytes(self) -> Result<Vec<u8>, io::Error> {
+        let compressed = self.compressed();
+        read_cast_file(self.file, compressed)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,33 +180,95 @@ pub(crate) fn storage_rel_path(storage_root: &Path, path: &Path) -> Option<(u32,
     Some((uid, remainder.to_path_buf()))
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_recording_path(storage_root: &Path, uid: u32, id: &str) -> Option<PathBuf> {
+    open_recording_file(storage_root, uid, id).map(|recording| recording.path)
+}
+
+pub(crate) fn open_recording_file(
+    storage_root: &Path,
+    uid: u32,
+    id: &str,
+) -> Option<RecordingFile> {
+    let rel_path = recording_rel_path_from_id(id)?;
+    let root_rel_path = user_recording_rel_path(uid, &rel_path);
+    let root = recording_root(storage_root).ok()?;
+    let file = root
+        .open_subpath(
+            &root_rel_path,
+            OpenFlags::O_RDONLY | OpenFlags::O_CLOEXEC | OpenFlags::O_NOFOLLOW,
+        )
+        .ok()?;
+
+    Some(RecordingFile {
+        path: storage_root.join(uid.to_string()).join(rel_path),
+        file,
+    })
+}
+
+pub(crate) fn remove_recording_file(storage_root: &Path, uid: u32, id: &str) -> Option<PathBuf> {
+    let rel_path = recording_rel_path_from_id(id)?;
+    let root_rel_path = user_recording_rel_path(uid, &rel_path);
+    let root = recording_root(storage_root).ok()?;
+    root.open_subpath(
+        &root_rel_path,
+        OpenFlags::O_RDONLY | OpenFlags::O_CLOEXEC | OpenFlags::O_NOFOLLOW,
+    )
+    .ok()?;
+    root.remove_file(&root_rel_path).ok()?;
+    Some(storage_root.join(uid.to_string()).join(rel_path))
+}
+
+fn recording_root(storage_root: &Path) -> Result<Root, pathrs::error::Error> {
+    Root::open(storage_root).map(|root| root.with_resolver_flags(ResolverFlags::NO_SYMLINKS))
+}
+
+fn user_recording_rel_path(uid: u32, rel_path: &Path) -> PathBuf {
+    PathBuf::from(uid.to_string()).join(rel_path)
+}
+
+fn recording_rel_path_from_id(id: &str) -> Option<PathBuf> {
     let decoded = URL_SAFE_NO_PAD.decode(id).ok()?;
     let rel = String::from_utf8(decoded).ok()?;
     let rel_path = PathBuf::from(rel);
-    if rel_path.is_absolute() {
+    if rel_path.as_os_str().is_empty() || rel_path.as_os_str().as_bytes().contains(&0) {
         return None;
-    }
-    for component in rel_path.components() {
-        if matches!(component, std::path::Component::ParentDir) {
-            return None;
-        }
     }
 
-    let user_root = storage_root.join(uid.to_string());
-    let full = user_root.join(rel_path);
-    let canonical = full.canonicalize().ok()?;
-    if !canonical.starts_with(&user_root) {
+    for component in rel_path.components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => return None,
+        };
+    }
+
+    let file_name = rel_path.file_name()?.to_str()?;
+    if !is_recording_file_name(file_name) {
         return None;
     }
-    Some(canonical)
+
+    Some(rel_path)
 }
 
+#[cfg(test)]
 pub(crate) fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
-    let bytes = std::fs::read(path)?;
-    if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+    let compressed = path.extension().and_then(|s| s.to_str()) == Some("zst");
+    decode_cast_bytes(std::fs::read(path)?, compressed)
+}
+
+pub(crate) fn read_cast_file(mut file: File, compressed: bool) -> Result<Vec<u8>, io::Error> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    decode_cast_bytes(bytes, compressed)
+}
+
+fn decode_cast_bytes(bytes: Vec<u8>, compressed: bool) -> Result<Vec<u8>, io::Error> {
+    if compressed {
         let decoded = zstd::stream::decode_all(bytes.as_slice())
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
         Ok(decoded)
     } else {
         Ok(bytes)
@@ -254,6 +340,8 @@ fn date_from_path(user_root: &Path, path: &Path) -> Option<NaiveDate> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {
@@ -331,6 +419,26 @@ mod tests {
         assert!(resolve_recording_path(&root, 1000, &traversal_id).is_none());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_recording_path_rejects_symlinked_recording() {
+        let root = temp_root("resolve-symlink");
+        let outside = temp_root("resolve-symlink-outside");
+        let outside_recording = outside.join("secret.cast");
+        let link = root.join("1000/2026/06/06/link.cast");
+        write_file(&outside_recording, "{}");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&outside_recording, &link).unwrap();
+
+        let id = URL_SAFE_NO_PAD.encode("2026/06/06/link.cast");
+        assert!(resolve_recording_path(&root, 1000, &id).is_none());
+        assert!(remove_recording_file(&root, 1000, &id).is_none());
+        assert!(outside_recording.exists());
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
     }
 
     #[test]

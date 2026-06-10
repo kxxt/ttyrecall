@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, RwLock as StdRwLock},
     time::SystemTime,
 };
@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
 use crate::catalog::{
-    read_cast_bytes, resolve_recording_path, HeatmapDay, RecordingIndex, RecordingInfo,
+    open_recording_file, read_cast_file, remove_recording_file, HeatmapDay, RecordingFile,
+    RecordingIndex, RecordingInfo,
 };
 
 use super::{session::require_session, state::AppState};
@@ -99,15 +100,13 @@ pub(super) async fn delete_recordings(
 
     let mut deleted = 0;
     for id in payload.ids {
-        if let Some(path) = resolve_recording_path(&state.storage_root, session.uid, &id) {
-            if std::fs::remove_file(&path).is_ok() {
-                state
-                    .recording_index
-                    .write()
-                    .unwrap()
-                    .remove_path(&state.storage_root, &path);
-                deleted += 1;
-            }
+        if let Some(path) = remove_recording_file(&state.storage_root, session.uid, &id) {
+            state
+                .recording_index
+                .write()
+                .unwrap()
+                .remove_path(&state.storage_root, &path);
+            deleted += 1;
         }
     }
 
@@ -124,12 +123,12 @@ pub(super) async fn download_recording(
         Err(status) => return (status, "Not authenticated").into_response(),
     };
 
-    let path = match resolve_recording_path(&state.storage_root, session.uid, &id) {
-        Some(path) => path,
+    let recording = match open_recording_file(&state.storage_root, session.uid, &id) {
+        Some(recording) => recording,
         None => return (StatusCode::NOT_FOUND, "Not found").into_response(),
     };
 
-    let file_name = download_filename(&path);
+    let file_name = download_filename(&recording.path);
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_DISPOSITION, content_disposition(&file_name));
     headers.insert(
@@ -137,8 +136,8 @@ pub(super) async fn download_recording(
         HeaderValue::from_static("application/json"),
     );
 
-    if path.extension().and_then(|s| s.to_str()) == Some("zst") {
-        let bytes = match get_cast_bytes(&state, path).await {
+    if recording.compressed() {
+        let bytes = match get_cast_bytes(&state, recording).await {
             Ok(bytes) => bytes,
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read").into_response(),
         };
@@ -146,10 +145,7 @@ pub(super) async fn download_recording(
         return (StatusCode::OK, headers, body).into_response();
     }
 
-    let file = match tokio::fs::File::open(&path).await {
-        Ok(file) => file,
-        Err(_) => return (StatusCode::NOT_FOUND, "Not found").into_response(),
-    };
+    let file = tokio::fs::File::from_std(recording.file);
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
     (StatusCode::OK, headers, body).into_response()
@@ -165,12 +161,12 @@ pub(super) async fn cast_recording(
         Err(status) => return (status, "Not authenticated").into_response(),
     };
 
-    let path = match resolve_recording_path(&state.storage_root, session.uid, &id) {
-        Some(path) => path,
+    let recording = match open_recording_file(&state.storage_root, session.uid, &id) {
+        Some(recording) => recording,
         None => return (StatusCode::NOT_FOUND, "Not found").into_response(),
     };
 
-    let bytes = match get_cast_bytes(&state, path).await {
+    let bytes = match get_cast_bytes(&state, recording).await {
         Ok(bytes) => bytes,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read").into_response(),
     };
@@ -266,9 +262,11 @@ fn percent_encode_header_value(value: &str) -> String {
 
 async fn get_cast_bytes(
     state: &AppState,
-    path: PathBuf,
+    recording: RecordingFile,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let metadata = tokio::fs::metadata(&path).await?;
+    let path = recording.path.clone();
+    let compressed = recording.compressed();
+    let metadata = recording.file.metadata()?;
     let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     {
         let mut cache = state.cast_cache.lock().await;
@@ -277,8 +275,8 @@ async fn get_cast_bytes(
         }
     }
 
-    let path_for_read = path.clone();
-    let bytes = tokio::task::spawn_blocking(move || read_cast_bytes(&path_for_read)).await??;
+    let file = recording.file;
+    let bytes = tokio::task::spawn_blocking(move || read_cast_file(file, compressed)).await??;
 
     let mut cache = state.cast_cache.lock().await;
     cache.insert(path, mtime, bytes.clone());
@@ -297,6 +295,7 @@ mod tests {
     use std::{
         collections::HashMap,
         fs,
+        path::PathBuf,
         sync::{Arc, RwLock as StdRwLock},
         time::{Duration, Instant},
     };

@@ -2,8 +2,8 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fmt::Debug,
-    fs::{self, File},
-    io::{self, BufWriter, ErrorKind, Write},
+    fs::File,
+    io::{self, BufWriter, Write},
     num::NonZeroUsize,
     path::PathBuf,
     rc::Rc,
@@ -13,6 +13,7 @@ use std::{
 use chrono::Utc;
 use color_eyre::eyre::{bail, Report};
 use log::{error, info};
+use pathrs::{flags::RenameFlags, Root};
 use serde::Serialize;
 use thiserror::Error;
 use ttyrecall_common::Size;
@@ -22,8 +23,11 @@ use crate::{daemon::Compress, manager::Manager};
 /// A running pty session
 struct PtySession {
     writer: Option<Box<dyn Write>>,
+    recording_root: Root,
     unfinished_path: PathBuf,
     final_path: PathBuf,
+    unfinished_rel_path: PathBuf,
+    final_rel_path: PathBuf,
     measurer: Measurer,
     start_ns: u64,
     comm: String,
@@ -64,8 +68,11 @@ impl PtySession {
         };
         Ok(Self {
             writer: Some(writer),
+            recording_root: pending_recording.root,
             unfinished_path: pending_recording.unfinished_path,
             final_path: pending_recording.final_path,
+            unfinished_rel_path: pending_recording.unfinished_rel_path,
+            final_rel_path: pending_recording.final_rel_path,
             start_ns,
             measurer,
             comm,
@@ -173,18 +180,13 @@ impl PtySession {
         writer.flush()?;
         drop(writer);
 
-        if self.final_path.exists() {
-            return Err(io::Error::new(
-                ErrorKind::AlreadyExists,
-                format!(
-                    "final recording path {} already exists",
-                    self.final_path.display()
-                ),
+        self.recording_root
+            .rename(
+                &self.unfinished_rel_path,
+                &self.final_rel_path,
+                RenameFlags::RENAME_NOREPLACE,
             )
-            .into());
-        }
-
-        fs::rename(&self.unfinished_path, &self.final_path)?;
+            .map_err(Report::new)?;
         info!(
             "finalized recording {} -> {}",
             self.unfinished_path.display(),

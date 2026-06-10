@@ -1,10 +1,7 @@
 use std::{
     borrow::Cow,
-    fs::File,
-    os::{
-        fd::{AsRawFd, FromRawFd, RawFd},
-        linux::fs::MetadataExt,
-    },
+    fs::{File, Permissions},
+    os::{linux::fs::MetadataExt, unix::fs::PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -15,10 +12,17 @@ use color_eyre::{
 };
 use log::warn;
 use nix::{
-    errno::Errno,
-    fcntl::{open, openat, AtFlags, OFlag},
-    sys::stat::{fchmod, fstatat, mkdirat, umask, Mode},
-    unistd::{fchown, Gid, Group, Uid},
+    sys::stat::{umask, Mode},
+    unistd::{Gid, Group, Uid},
+};
+use pathrs::{
+    error::ErrorKind as PathrsErrorKind,
+    flags::{OpenFlags, ResolverFlags},
+    Root,
+};
+use rustix::{
+    fs::{fchmod, fchown as rustix_fchown, Mode as RustixMode},
+    process::{Gid as RustixGid, Uid as RustixUid},
 };
 
 use crate::daemon::Compress;
@@ -29,6 +33,7 @@ pub(crate) const RECORDING_UNFINISHED_SUFFIX: &str = ".unfinished";
 #[derive(Debug)]
 pub struct Manager {
     root: PathBuf,
+    root_handle: Root,
     group: Option<Group>,
     directory_owner: Uid,
     pub compress: Compress,
@@ -37,8 +42,11 @@ pub struct Manager {
 #[derive(Debug)]
 pub(crate) struct PendingRecordingFile {
     pub(crate) file: File,
+    pub(crate) root: Root,
     pub(crate) unfinished_path: PathBuf,
     pub(crate) final_path: PathBuf,
+    pub(crate) unfinished_rel_path: PathBuf,
+    pub(crate) final_rel_path: PathBuf,
 }
 
 impl Manager {
@@ -70,11 +78,13 @@ impl Manager {
         } else {
             warn!("Group ttyrecall does not exist!");
         }
+        let root_handle = Root::open(&root)?.with_resolver_flags(ResolverFlags::NO_SYMLINKS);
         // Set umask to 007
         umask(Mode::S_IXOTH | Mode::S_IROTH | Mode::S_IWOTH);
         // TODO: Maybe check permissions
         Ok(Self {
             root,
+            root_handle,
             group,
             directory_owner: Uid::from_raw(0),
             compress,
@@ -89,36 +99,47 @@ impl Manager {
     ) -> color_eyre::Result<PendingRecordingFile> {
         let now = chrono::Local::now();
 
-        let (date_dir, date_dir_fd) = self.create_dir_for_date(uid, now)?;
+        let (date_dir, date_dir_rel) = self.create_dir_for_date(uid, now)?;
         for counter in 0..32768 {
             let file_name = self.recording_file_name(now, pty_id, comm, counter);
+            let final_rel_path = date_dir_rel.join(&file_name);
             let final_path = date_dir.join(&file_name);
-            if entry_exists_at(date_dir_fd.as_raw_fd(), &file_name)? {
+            if self.entry_exists(&final_rel_path)? {
                 continue;
             }
 
             let unfinished_path = unfinished_path_for(&final_path);
-            let unfinished_name = unfinished_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| eyre!("invalid recording filename"))?;
+            let unfinished_rel_path = unfinished_path_for(&final_rel_path);
 
-            match self.create_file_at(date_dir_fd.as_raw_fd(), unfinished_name, uid) {
+            let file = match self.root_handle.create_file(
+                &unfinished_rel_path,
+                OpenFlags::O_WRONLY
+                    | OpenFlags::O_EXCL
+                    | OpenFlags::O_CLOEXEC
+                    | OpenFlags::O_NOFOLLOW,
+                &file_permissions(),
+            ) {
                 Ok(file) => {
-                    return Ok(PendingRecordingFile {
-                        file,
-                        unfinished_path,
-                        final_path,
-                    });
+                    self.set_file_owner_mode(&file, uid)?;
+                    file
                 }
-                Err(Errno::EEXIST) => continue,
+                Err(err) if is_pathrs_errno(&err, libc::EEXIST) => continue,
                 Err(err) => {
                     return Err(eyre!(
                         "failed to create recording {}: {err}",
                         unfinished_path.display()
                     ));
                 }
-            }
+            };
+
+            return Ok(PendingRecordingFile {
+                file,
+                root: self.root_handle.try_clone()?,
+                unfinished_path,
+                final_path,
+                unfinished_rel_path,
+                final_rel_path,
+            });
         }
         bail!("Failed to create recording file for pty {pty_id}");
     }
@@ -127,22 +148,20 @@ impl Manager {
         &self,
         uid: Uid,
         date: DateTime<Local>,
-    ) -> color_eyre::Result<(PathBuf, File)> {
-        let root = self.open_root_dir()?;
+    ) -> color_eyre::Result<(PathBuf, PathBuf)> {
         let uid_name = uid.as_raw().to_string();
         let year = date.year().to_string();
         let month = format!("{:02}", date.month());
         let day = format!("{:02}", date.day());
+        let date_dir_rel = PathBuf::from(&uid_name).join(&year).join(&month).join(&day);
 
-        let uid_dir = self.ensure_child_dir(root.as_raw_fd(), &uid_name)?;
-        let year_dir = self.ensure_child_dir(uid_dir.as_raw_fd(), &year)?;
-        let month_dir = self.ensure_child_dir(year_dir.as_raw_fd(), &month)?;
-        let day_dir = self.ensure_child_dir(month_dir.as_raw_fd(), &day)?;
+        self.root_handle
+            .mkdir_all(&date_dir_rel, &dir_permissions())?;
+        for rel_path in date_dir_components(&uid_name, &year, &month, &day) {
+            self.set_dir_owner_mode(&rel_path)?;
+        }
 
-        Ok((
-            self.root.join(uid_name).join(year).join(month).join(day),
-            day_dir,
-        ))
+        Ok((self.root.join(&date_dir_rel), date_dir_rel))
     }
 
     fn recording_file_name(
@@ -171,58 +190,46 @@ impl Manager {
         )
     }
 
-    fn open_root_dir(&self) -> color_eyre::Result<File> {
-        let fd = open(
-            self.root.as_path(),
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
-            Mode::empty(),
+    fn set_dir_owner_mode(&self, rel_path: &Path) -> color_eyre::Result<()> {
+        let dir = self.root_handle.open_subpath(
+            rel_path,
+            OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY | OpenFlags::O_CLOEXEC,
         )?;
-        Ok(unsafe { File::from_raw_fd(fd) })
+        rustix_fchown(
+            &dir,
+            Some(rustix_uid(self.directory_owner)),
+            self.group.as_ref().map(|g| g.gid).map(rustix_gid),
+        )?;
+        fchmod(&dir, dir_mode())?;
+        Ok(())
     }
 
-    fn ensure_child_dir(&self, parent_fd: RawFd, name: &str) -> color_eyre::Result<File> {
-        match mkdirat(Some(parent_fd), name, dir_mode()) {
-            Ok(()) | Err(Errno::EEXIST) => {}
-            Err(err) => return Err(err.into()),
+    fn set_file_owner_mode(&self, file: &File, uid: Uid) -> color_eyre::Result<()> {
+        rustix_fchown(
+            file,
+            Some(rustix_uid(uid)),
+            self.group.as_ref().map(|g| g.gid).map(rustix_gid),
+        )?;
+        fchmod(file, file_mode())?;
+        Ok(())
+    }
+
+    fn entry_exists(&self, rel_path: &Path) -> color_eyre::Result<bool> {
+        match self.root_handle.resolve_nofollow(rel_path) {
+            Ok(_) => Ok(true),
+            Err(err) if is_pathrs_errno(&err, libc::ENOENT) => Ok(false),
+            Err(err) => Err(err.into()),
         }
-
-        let fd = openat(
-            Some(parent_fd),
-            name,
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
-            Mode::empty(),
-        )?;
-        let dir = unsafe { File::from_raw_fd(fd) };
-        fchown(
-            dir.as_raw_fd(),
-            Some(self.directory_owner),
-            self.group.as_ref().map(|g| g.gid),
-        )?;
-        fchmod(dir.as_raw_fd(), dir_mode())?;
-        Ok(dir)
-    }
-
-    fn create_file_at(&self, parent_fd: RawFd, name: &str, uid: Uid) -> Result<File, Errno> {
-        let fd = openat(
-            Some(parent_fd),
-            name,
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
-            file_mode(),
-        )?;
-        let file = unsafe { File::from_raw_fd(fd) };
-        fchown(
-            file.as_raw_fd(),
-            Some(uid),
-            self.group.as_ref().map(|g| g.gid),
-        )?;
-        fchmod(file.as_raw_fd(), file_mode())?;
-        Ok(file)
     }
 
     #[cfg(test)]
     pub(crate) fn for_test(root: PathBuf, compress: Compress) -> Self {
+        let root_handle = Root::open(&root)
+            .expect("test storage root must exist")
+            .with_resolver_flags(ResolverFlags::NO_SYMLINKS);
         Self {
             root,
+            root_handle,
             group: None,
             directory_owner: Uid::current(),
             compress,
@@ -230,20 +237,41 @@ impl Manager {
     }
 }
 
-fn entry_exists_at(parent_fd: RawFd, name: &str) -> Result<bool, Errno> {
-    match fstatat(Some(parent_fd), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(_) => Ok(true),
-        Err(Errno::ENOENT) => Ok(false),
-        Err(err) => Err(err),
-    }
+fn dir_mode() -> RustixMode {
+    RustixMode::from_raw_mode(0o770)
 }
 
-fn dir_mode() -> Mode {
-    Mode::from_bits_truncate(0o770)
+fn file_mode() -> RustixMode {
+    RustixMode::from_raw_mode(0o660)
 }
 
-fn file_mode() -> Mode {
-    Mode::from_bits_truncate(0o660)
+fn dir_permissions() -> Permissions {
+    Permissions::from_mode(0o770)
+}
+
+fn file_permissions() -> Permissions {
+    Permissions::from_mode(0o660)
+}
+
+fn date_dir_components(uid: &str, year: &str, month: &str, day: &str) -> [PathBuf; 4] {
+    [
+        PathBuf::from(uid),
+        PathBuf::from(uid).join(year),
+        PathBuf::from(uid).join(year).join(month),
+        PathBuf::from(uid).join(year).join(month).join(day),
+    ]
+}
+
+fn is_pathrs_errno(err: &pathrs::error::Error, errno: i32) -> bool {
+    matches!(err.kind(), PathrsErrorKind::OsError(Some(value)) if value == errno)
+}
+
+fn rustix_uid(uid: Uid) -> RustixUid {
+    RustixUid::from_raw(uid.as_raw())
+}
+
+fn rustix_gid(gid: Gid) -> RustixGid {
+    RustixGid::from_raw(gid.as_raw())
 }
 
 pub(crate) fn unfinished_path_for(path: &Path) -> PathBuf {

@@ -1,7 +1,6 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Instant,
-};
+#[cfg(test)]
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use color_eyre::eyre::{bail, WrapErr};
 use serde::Deserialize;
@@ -68,8 +67,32 @@ impl Playback {
         playback
     }
 
+    #[cfg(test)]
     pub(super) fn load_at(path: PathBuf, title: String, start_at: f64) -> color_eyre::Result<Self> {
         let (header, events) = load_cast(&path)?;
+        Self::from_cast(header, events, title, start_at)
+    }
+
+    pub(super) fn load_recording(
+        recording: catalog::RecordingFile,
+        title: String,
+        start_at: f64,
+    ) -> color_eyre::Result<Self> {
+        let source = recording.path.display().to_string();
+        let bytes = recording
+            .read_cast_bytes()
+            .wrap_err_with(|| format!("failed to read {source}"))?;
+        let (header, events) =
+            parse_cast_bytes(&bytes).wrap_err_with(|| format!("invalid asciicast {source}"))?;
+        Self::from_cast(header, events, title, start_at)
+    }
+
+    fn from_cast(
+        header: CastHeader,
+        events: Vec<CastEvent>,
+        title: String,
+        start_at: f64,
+    ) -> color_eyre::Result<Self> {
         let rows = header.height.unwrap_or(24).clamp(1, 200);
         let cols = header.width.unwrap_or(80).clamp(1, 400);
         let start_offset = normalize_time(start_at);
@@ -178,6 +201,7 @@ impl Playback {
     }
 }
 
+#[cfg(test)]
 fn load_cast(path: &Path) -> color_eyre::Result<(CastHeader, Vec<CastEvent>)> {
     let bytes = catalog::read_cast_bytes(path)
         .wrap_err_with(|| format!("failed to read {}", path.display()))?;

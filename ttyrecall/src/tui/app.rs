@@ -406,8 +406,8 @@ impl App {
         }
         self.selected_id = Some(selection_key);
 
-        let Some(path) =
-            catalog::resolve_recording_path(&self.storage_root, self.uid, &recording.id)
+        let Some(recording_file) =
+            catalog::open_recording_file(&self.storage_root, self.uid, &recording.id)
         else {
             self.playback = Playback::error(
                 recording.display.clone(),
@@ -417,7 +417,7 @@ impl App {
             return;
         };
 
-        match Playback::load_at(path, recording.display.clone(), start_at) {
+        match Playback::load_recording(recording_file, recording.display.clone(), start_at) {
             Ok(playback) => {
                 self.playback = playback;
                 if start_at > 0.0 {
@@ -443,25 +443,18 @@ impl App {
 
     fn delete_recording(&mut self, recording: RecordingInfo) {
         let Some(path) =
-            catalog::resolve_recording_path(&self.storage_root, self.uid, &recording.id)
+            catalog::remove_recording_file(&self.storage_root, self.uid, &recording.id)
         else {
             self.status = format!("Missing {}", recording.name);
             self.refresh_after_delete();
             return;
         };
 
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
-                self.recording_index
-                    .write()
-                    .unwrap()
-                    .remove_path(&self.storage_root, &path);
-                self.status = format!("Deleted {}", recording.name);
-            }
-            Err(err) => {
-                self.status = format!("Failed to delete {}: {err}", recording.name);
-            }
-        }
+        self.recording_index
+            .write()
+            .unwrap()
+            .remove_path(&self.storage_root, &path);
+        self.status = format!("Deleted {}", recording.name);
         self.refresh_after_delete();
     }
 
