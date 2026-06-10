@@ -1,7 +1,11 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -9,6 +13,7 @@ use axum::{
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use constant_time_eq::constant_time_eq;
+use log::warn;
 use nix::unistd::User;
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -16,8 +21,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     pam,
-    state::{AppState, Session},
+    state::{AppState, LoginAttempt, Session},
 };
+
+const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
+const LOGIN_LOCK_THRESHOLD: u32 = 5;
+const LOGIN_MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
+const MAX_LOGIN_ATTEMPTS: usize = 1024;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct LoginRequest {
@@ -44,6 +54,7 @@ pub(super) struct SessionInfo {
 
 pub(super) async fn login(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
     if state.single_user.is_some() {
@@ -53,18 +64,33 @@ pub(super) async fn login(
         return (StatusCode::BAD_REQUEST, "Missing credentials").into_response();
     }
 
-    match pam::authenticate(&state.pam_service, &payload.username, &payload.password) {
-        Ok(()) => {}
-        Err(_) => return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response(),
+    let username = payload.username.trim().to_string();
+    let attempt_key = login_attempt_key(source, &username);
+    if login_is_locked(&state, &attempt_key).await {
+        warn!("rate limited web login attempt for user {username:?} from {source}");
+        return (StatusCode::TOO_MANY_REQUESTS, "Authentication failed").into_response();
     }
 
-    let user =
-        match User::from_name(&payload.username).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR) {
-            Ok(Some(user)) => user,
-            _ => return (StatusCode::UNAUTHORIZED, "Unknown user").into_response(),
-        };
+    match pam::authenticate(&state.pam_service, &username, &payload.password) {
+        Ok(()) => {}
+        Err(_) => {
+            record_login_failure(&state, &attempt_key).await;
+            warn!("failed web login attempt for user {username:?} from {source}");
+            return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+        }
+    }
 
-    create_session(&state, payload.username, user.uid.as_raw()).await
+    let user = match User::from_name(&username).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR) {
+        Ok(Some(user)) => user,
+        _ => {
+            record_login_failure(&state, &attempt_key).await;
+            warn!("failed web login attempt for unknown user {username:?} from {source}");
+            return (StatusCode::UNAUTHORIZED, "Authentication failed").into_response();
+        }
+    };
+
+    clear_login_failures(&state, &attempt_key).await;
+    create_session(&state, username, user.uid.as_raw()).await
 }
 
 pub(super) async fn token_login(
@@ -139,6 +165,68 @@ async fn create_session(state: &AppState, username: String, uid: u32) -> Respons
         }),
     )
         .into_response()
+}
+
+fn login_attempt_key(source: SocketAddr, username: &str) -> String {
+    format!("{}:{username}", source.ip())
+}
+
+async fn login_is_locked(state: &AppState, key: &str) -> bool {
+    let now = Instant::now();
+    let mut attempts = state.login_attempts.write().await;
+    attempts.retain(|_, attempt| {
+        attempt
+            .locked_until
+            .is_some_and(|locked_until| locked_until > now)
+            || now.duration_since(attempt.last_failure) <= LOGIN_FAILURE_WINDOW
+    });
+    attempts
+        .get(key)
+        .and_then(|attempt| attempt.locked_until)
+        .is_some_and(|locked_until| locked_until > now)
+}
+
+async fn record_login_failure(state: &AppState, key: &str) {
+    let now = Instant::now();
+    let mut attempts = state.login_attempts.write().await;
+    let attempt = attempts
+        .entry(key.to_string())
+        .and_modify(|attempt| {
+            if now.duration_since(attempt.last_failure) > LOGIN_FAILURE_WINDOW {
+                attempt.failures = 0;
+                attempt.locked_until = None;
+            }
+        })
+        .or_insert(LoginAttempt {
+            failures: 0,
+            last_failure: now,
+            locked_until: None,
+        });
+
+    attempt.failures = attempt.failures.saturating_add(1);
+    attempt.last_failure = now;
+    if attempt.failures >= LOGIN_LOCK_THRESHOLD {
+        let exponent = (attempt.failures - LOGIN_LOCK_THRESHOLD).min(10);
+        let seconds = 2u64.pow(exponent).min(LOGIN_MAX_BACKOFF.as_secs());
+        attempt.locked_until = Some(now + Duration::from_secs(seconds));
+    }
+    if attempts.len() > MAX_LOGIN_ATTEMPTS {
+        evict_oldest_login_attempt(&mut attempts);
+    }
+}
+
+async fn clear_login_failures(state: &AppState, key: &str) {
+    state.login_attempts.write().await.remove(key);
+}
+
+fn evict_oldest_login_attempt(attempts: &mut std::collections::HashMap<String, LoginAttempt>) {
+    if let Some(oldest) = attempts
+        .iter()
+        .min_by_key(|(_, attempt)| attempt.last_failure)
+        .map(|(username, _)| username.clone())
+    {
+        attempts.remove(&oldest);
+    }
 }
 
 pub(super) fn new_session_token() -> String {
@@ -229,6 +317,10 @@ mod tests {
 
     async fn json_body(response: Response) -> Value {
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    fn source() -> ConnectInfo<SocketAddr> {
+        ConnectInfo("127.0.0.1:12345".parse().unwrap())
     }
 
     #[test]
@@ -374,6 +466,7 @@ mod tests {
         let single_user = single_user_state(Some("secret"), Duration::from_secs(60));
         let response = login(
             State(single_user),
+            source(),
             Json(LoginRequest {
                 username: "alice".to_string(),
                 password: "secret".to_string(),
@@ -388,6 +481,7 @@ mod tests {
             recording_index: Arc::new(StdRwLock::new(RecordingIndex::default())),
             pam_service: "login".to_string(),
             sessions: RwLock::new(HashMap::new()),
+            login_attempts: RwLock::new(HashMap::new()),
             session_ttl: Duration::from_secs(60),
             single_user: None,
             frontend_root: PathBuf::from("/tmp/frontend"),
@@ -402,6 +496,7 @@ mod tests {
 
         let response = login(
             State(state),
+            source(),
             Json(LoginRequest {
                 username: " ".to_string(),
                 password: "secret".to_string(),
@@ -410,5 +505,21 @@ mod tests {
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn login_failures_lock_and_clear_by_source_and_user() {
+        let state = single_user_state(Some("secret"), Duration::from_secs(60));
+        let key = login_attempt_key("127.0.0.1:12345".parse().unwrap(), "alice");
+
+        for _ in 0..LOGIN_LOCK_THRESHOLD {
+            record_login_failure(&state, &key).await;
+        }
+
+        assert!(login_is_locked(&state, &key).await);
+        assert!(!login_is_locked(&state, "127.0.0.2:alice").await);
+
+        clear_login_failures(&state, &key).await;
+        assert!(!login_is_locked(&state, &key).await);
     }
 }

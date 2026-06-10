@@ -19,11 +19,19 @@ pub(super) struct Session {
 }
 
 #[derive(Debug)]
+pub(super) struct LoginAttempt {
+    pub(super) failures: u32,
+    pub(super) last_failure: Instant,
+    pub(super) locked_until: Option<Instant>,
+}
+
+#[derive(Debug)]
 pub(super) struct AppState {
     pub(super) storage_root: PathBuf,
     pub(super) recording_index: Arc<StdRwLock<RecordingIndex>>,
     pub(super) pam_service: String,
     pub(super) sessions: RwLock<HashMap<String, Session>>,
+    pub(super) login_attempts: RwLock<HashMap<String, LoginAttempt>>,
     pub(super) session_ttl: Duration,
     pub(super) single_user: Option<SingleUser>,
     pub(super) frontend_root: PathBuf,
@@ -63,6 +71,7 @@ impl AppState {
             recording_index,
             pam_service,
             sessions: RwLock::new(HashMap::new()),
+            login_attempts: RwLock::new(HashMap::new()),
             session_ttl,
             single_user,
             frontend_root,

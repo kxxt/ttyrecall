@@ -309,6 +309,7 @@ mod tests {
                     last_seen: Instant::now(),
                 },
             )])),
+            login_attempts: RwLock::new(HashMap::new()),
             session_ttl: Duration::from_secs(60),
             single_user: Some(SingleUser {
                 uid,
