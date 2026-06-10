@@ -28,6 +28,7 @@ const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 const LOGIN_LOCK_THRESHOLD: u32 = 5;
 const LOGIN_MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
 const MAX_LOGIN_ATTEMPTS: usize = 1024;
+const MAX_SESSIONS: usize = 1024;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct LoginRequest {
@@ -149,7 +150,14 @@ async fn create_session(state: &AppState, username: String, uid: u32) -> Respons
         uid,
         last_seen: Instant::now(),
     };
-    state.sessions.write().await.insert(token.clone(), session);
+    {
+        let mut sessions = state.sessions.write().await;
+        prune_sessions(&mut sessions, state.session_ttl, Instant::now());
+        sessions.insert(token.clone(), session);
+        while sessions.len() > MAX_SESSIONS {
+            evict_oldest_session(&mut sessions);
+        }
+    }
 
     let cookie = format!("session={}; HttpOnly; SameSite=Strict; Path=/", token);
     let mut headers = HeaderMap::new();
@@ -264,6 +272,24 @@ pub(super) async fn require_session(
         });
     }
     Err(StatusCode::UNAUTHORIZED)
+}
+
+fn prune_sessions(
+    sessions: &mut std::collections::HashMap<String, Session>,
+    ttl: Duration,
+    now: Instant,
+) {
+    sessions.retain(|_, session| now.duration_since(session.last_seen) <= ttl);
+}
+
+fn evict_oldest_session(sessions: &mut std::collections::HashMap<String, Session>) {
+    if let Some(oldest) = sessions
+        .iter()
+        .min_by_key(|(_, session)| session.last_seen)
+        .map(|(token, _)| token.clone())
+    {
+        sessions.remove(&oldest);
+    }
 }
 
 #[cfg(test)]
@@ -521,5 +547,39 @@ mod tests {
 
         clear_login_failures(&state, &key).await;
         assert!(!login_is_locked(&state, &key).await);
+    }
+
+    #[tokio::test]
+    async fn create_session_prunes_expired_entries_and_caps_store() {
+        let state = single_user_state(Some("secret"), Duration::from_secs(60));
+        let now = Instant::now();
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "expired".to_string(),
+            Session {
+                username: "alice".to_string(),
+                uid: 1000,
+                last_seen: now - Duration::from_secs(120),
+            },
+        );
+        for i in 0..MAX_SESSIONS {
+            sessions.insert(
+                format!("active-{i}"),
+                Session {
+                    username: "alice".to_string(),
+                    uid: 1000,
+                    last_seen: now + Duration::from_millis(i as u64),
+                },
+            );
+        }
+        *state.sessions.write().await = sessions;
+
+        let response = create_session(&state, "alice".to_string(), 1000).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let sessions = state.sessions.read().await;
+        assert_eq!(sessions.len(), MAX_SESSIONS);
+        assert!(!sessions.contains_key("expired"));
+        assert!(!sessions.contains_key("active-0"));
     }
 }
