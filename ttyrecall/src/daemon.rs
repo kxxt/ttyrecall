@@ -180,13 +180,26 @@ impl Daemon {
 
     /// Escaped path safe comm
     fn escape_comm(comm: [u8; 16]) -> String {
-        String::from_utf8_lossy(
+        let escaped: String = String::from_utf8_lossy(
             std::ffi::CStr::from_bytes_until_nul(&comm)
                 .unwrap()
                 .to_bytes(),
         )
-        .into_owned()
-        .replace('/', "_")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+        if escaped.is_empty() {
+            "unknown".to_string()
+        } else {
+            escaped
+        }
     }
 }
 
@@ -481,10 +494,14 @@ mod tests {
     fn escape_comm_stops_at_nul_and_sanitizes_slashes() {
         assert_eq!(Daemon::escape_comm(comm("bash")), "bash");
         assert_eq!(Daemon::escape_comm(comm("foo/bar")), "foo_bar");
+        assert_eq!(Daemon::escape_comm(comm("bad\r\nx")), "bad__x");
+        assert_eq!(Daemon::escape_comm(comm("a b\tc")), "a_b_c");
 
         let mut raw = [0; 16];
         raw[..8].copy_from_slice(b"cmd\0tail");
         assert_eq!(Daemon::escape_comm(raw), "cmd");
+
+        assert_eq!(Daemon::escape_comm([0; 16]), "unknown");
     }
 
     #[test]

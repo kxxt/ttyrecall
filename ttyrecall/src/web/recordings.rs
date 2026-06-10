@@ -131,10 +131,7 @@ pub(super) async fn download_recording(
 
     let file_name = download_filename(&path);
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file_name)).unwrap(),
-    );
+    headers.insert(header::CONTENT_DISPOSITION, content_disposition(&file_name));
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
@@ -227,6 +224,44 @@ fn download_filename(path: &Path) -> String {
     } else {
         name.to_string()
     }
+}
+
+fn content_disposition(file_name: &str) -> HeaderValue {
+    let fallback = ascii_header_filename(file_name);
+    let encoded = percent_encode_header_value(file_name);
+    let value = format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}");
+    HeaderValue::from_str(&value)
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=\"recording.cast\""))
+}
+
+fn ascii_header_filename(file_name: &str) -> String {
+    let sanitized: String = file_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "recording.cast".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn percent_encode_header_value(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 async fn get_cast_bytes(
@@ -484,10 +519,14 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
-            "attachment; filename=\"bash-pty2-10:30.cast\""
-        );
+        let content_disposition = response
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_disposition.contains("filename=\"bash-pty2-10_30.cast\""));
+        assert!(content_disposition.contains("filename*=UTF-8''bash-pty2-10%3A30.cast"));
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(std::str::from_utf8(&body).unwrap().contains("hello"));
 
@@ -524,5 +563,22 @@ mod tests {
             "bash-pty2.cast"
         );
         assert_eq!(download_filename(Path::new("")), "recording.cast");
+    }
+
+    #[test]
+    fn content_disposition_sanitizes_header_filename() {
+        let header = content_disposition("bad\r\nname.cast")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(header.contains("filename=\"bad__name.cast\""));
+        assert!(header.contains("filename*=UTF-8''bad%0D%0Aname.cast"));
+
+        let header = content_disposition("snowman-\u{2603}.cast")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(header.contains("filename=\"snowman-_.cast\""));
+        assert!(header.contains("filename*=UTF-8''snowman-%E2%98%83.cast"));
     }
 }
