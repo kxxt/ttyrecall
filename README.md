@@ -23,6 +23,12 @@ is based on text instead of screenshots?
 Before adding AI features(if I ever want to do that), `ttyrecall` will focus on collecting and archiving terminal outputs.
 So it can be considered as [asciinema](https://asciinema.org/), but always on.
 
+# Security Notes
+
+`ttyrecall` records terminal output continuously. Treat recordings as sensitive data: prompts with echo disabled are usually not captured, but any secret printed to a terminal, such as tokens, keys, or command output, can be stored in a recording.
+
+Only replay recordings from sources you trust. Raw terminal playback through `ttyrecall play` or `asciinema play` writes recorded bytes to your terminal, so a crafted `.cast` file can include hostile terminal escape sequences.
+
 # Current Status
 
 - [x] Record tty in the background to asciicast-v2 format

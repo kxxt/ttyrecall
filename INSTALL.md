@@ -57,4 +57,6 @@ Set env `ZSTD_SYS_USE_PKG_CONFIG=1` to dynamically link to system zstd library.
 
 For `ttyrecall web` and `ttyrecall browse`, user config is also loaded from `$XDG_CONFIG_HOME/ttyrecall/config.toml` or `~/.config/ttyrecall/config.toml`. Values in the user config override system-wide values field by field. `ttyrecall daemon` and `ttyrecall web-service` use the system-wide config only.
 
+Recordings can contain secrets printed to terminals, including tokens, keys, and command output. Keep the storage root and web access controls restricted, and replay `.cast` files only when you trust their source because raw terminal playback can include terminal escape sequences.
+
 See the `ttyrecall-git` AUR package for a simple systemd service.
