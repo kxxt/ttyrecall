@@ -4,6 +4,8 @@ use std::{
     time::Instant,
 };
 
+use chrono::{Local, NaiveDate};
+
 use crate::catalog::{self, HeatmapDay, RecordingIndex, RecordingInfo};
 use crate::search::{search_recordings, RipgrepSearchConfig, SearchResult};
 
@@ -26,6 +28,7 @@ pub(super) struct App {
     pub(super) heatmap_rows: u16,
     pub(super) heatmap_week_scroll: usize,
     pub(super) heatmap_row_offset: usize,
+    pub(super) today: NaiveDate,
     pub(super) date_filter: Option<String>,
     selected_id: Option<String>,
     pub(super) last_refresh: Instant,
@@ -76,6 +79,7 @@ impl App {
             heatmap_rows: 10,
             heatmap_week_scroll: 0,
             heatmap_row_offset: 0,
+            today: Local::now().date_naive(),
             date_filter: None,
             selected_id: None,
             last_refresh: Instant::now() - REFRESH_INTERVAL,
@@ -92,6 +96,7 @@ impl App {
     }
 
     pub(super) fn refresh(&mut self) {
+        self.today = Local::now().date_naive();
         let index = self.recording_index.read().unwrap();
         self.all_recordings = index.list_for_user(self.uid);
         self.heatmap = index.heatmap_for_user(self.uid);

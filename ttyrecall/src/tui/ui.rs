@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -169,7 +169,7 @@ fn draw_heatmap(frame: &mut Frame<'_>, area: Rect, app: &mut App, click_map: &mu
     let visible_lines = area.height.saturating_sub(2) as usize;
     let visible_weeks = visible_heatmap_weeks(inner_width);
     app.clamp_heatmap_scroll(visible_lines, visible_weeks);
-    let today = Local::now().date_naive();
+    let today = app.today;
     let first = today
         - chrono::Duration::days(
             today.weekday().num_days_from_sunday() as i64 + (HEATMAP_TOTAL_WEEKS as i64 - 1) * 7,
@@ -640,6 +640,7 @@ mod tests {
             date: "2026-06-06".to_string(),
             count: 2,
         }];
+        app.today = NaiveDate::from_ymd_opt(2026, 6, 13).unwrap();
         app.status = "Ready".to_string();
         app
     }
