@@ -21,6 +21,7 @@ allow = [
     "LGPL-2.1-or-later",
     "MIT",
     "MIT-0",
+    "MPL-2.0",
     "Unicode-DFS-2016",
     "Unlicense",
     "WTFPL",
