@@ -5,6 +5,7 @@ use cli::{Command, CommandLine};
 use color_eyre::eyre::bail;
 use daemon::Daemon;
 
+mod asciicast;
 mod catalog;
 mod cli;
 mod config;

@@ -18,7 +18,10 @@ use serde::Serialize;
 use thiserror::Error;
 use ttyrecall_common::Size;
 
-use crate::{daemon::Compress, manager::Manager};
+use crate::{
+    daemon::{AsciicastVersion, Compress},
+    manager::Manager,
+};
 
 /// A running pty session
 struct PtySession {
@@ -30,6 +33,8 @@ struct PtySession {
     final_rel_path: PathBuf,
     measurer: Measurer,
     start_ns: u64,
+    last_event_ns: u64,
+    asciicast_version: AsciicastVersion,
     comm: String,
     /// Wait for the first resize event to correctly populate the width/height metadata.
     staged_events: Option<Vec<StagedEvent>>,
@@ -74,6 +79,8 @@ impl PtySession {
             unfinished_rel_path: pending_recording.unfinished_rel_path,
             final_rel_path: pending_recording.final_rel_path,
             start_ns,
+            last_event_ns: start_ns,
+            asciicast_version: manager.asciicast_version,
             measurer,
             comm,
             staged_events: Some(Vec::new()),
@@ -98,17 +105,35 @@ impl PtySession {
         for e in self.staged_events.take().unwrap() {
             match e {
                 StagedEvent::Metadata { size, timestamp } => {
-                    writeln!(
-                        self.writer_mut(),
-                        r#"{{"version": 2, "width": {}, "height": {}, "timestamp": {}, "env": {{"TERM": "xterm-256color"}}}}"#,
-                        size.width,
-                        size.height,
-                        timestamp
-                    )?;
+                    self.write_header(size, timestamp)?;
                 }
                 StagedEvent::Write { content, time_ns } => {
                     self.write(&content, time_ns)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_header(&mut self, size: Size, timestamp: i64) -> Result<(), Error> {
+        match self.asciicast_version {
+            AsciicastVersion::V2 => {
+                writeln!(
+                    self.writer_mut(),
+                    r#"{{"version":2,"width":{},"height":{},"timestamp":{},"env":{{"TERM":"xterm-256color"}}}}"#,
+                    size.width,
+                    size.height,
+                    timestamp
+                )?;
+            }
+            AsciicastVersion::V3 => {
+                writeln!(
+                    self.writer_mut(),
+                    r#"{{"version":3,"term":{{"cols":{},"rows":{},"type":"xterm-256color"}},"timestamp":{}}}"#,
+                    size.width,
+                    size.height,
+                    timestamp
+                )?;
             }
         }
         Ok(())
@@ -128,10 +153,10 @@ impl PtySession {
 
     pub fn write(&mut self, content: &str, time_ns: u64) -> Result<(), Error> {
         self.budget_overran()?;
-        let diff_secs = Duration::from_nanos(time_ns - self.start_ns).as_secs_f64();
+        let time_secs = self.event_time_secs(time_ns);
         {
             let mut ser = serde_json::Serializer::new(self.writer_mut());
-            (diff_secs, "o", content).serialize(&mut ser)?;
+            (time_secs, "o", content).serialize(&mut ser)?;
         }
         writeln!(self.writer_mut())?;
         Ok(())
@@ -139,13 +164,26 @@ impl PtySession {
 
     pub fn resize(&mut self, size: Size, time_ns: u64) -> Result<(), Error> {
         self.budget_overran()?;
-        let diff_secs = Duration::from_nanos(time_ns - self.start_ns).as_secs_f64();
+        let time_secs = self.event_time_secs(time_ns);
         {
             let mut ser = serde_json::Serializer::new(self.writer_mut());
-            (diff_secs, "r", format!("{}x{}", size.width, size.height)).serialize(&mut ser)?;
+            (time_secs, "r", format!("{}x{}", size.width, size.height)).serialize(&mut ser)?;
         }
         writeln!(self.writer_mut())?;
         Ok(())
+    }
+
+    fn event_time_secs(&mut self, time_ns: u64) -> f64 {
+        match self.asciicast_version {
+            AsciicastVersion::V2 => {
+                Duration::from_nanos(time_ns.saturating_sub(self.start_ns)).as_secs_f64()
+            }
+            AsciicastVersion::V3 => {
+                let interval_ns = time_ns.saturating_sub(self.last_event_ns);
+                self.last_event_ns = self.last_event_ns.max(time_ns);
+                Duration::from_nanos(interval_ns).as_secs_f64()
+            }
+        }
     }
 
     pub fn budget_overran(&self) -> Result<(), Error> {
@@ -406,7 +444,15 @@ mod test {
     }
 
     fn write_test_session(root: &Path, compress: Compress) -> PtySession {
-        let manager = Manager::for_test(root.to_owned(), compress);
+        write_test_session_with_version(root, compress, AsciicastVersion::V2)
+    }
+
+    fn write_test_session_with_version(
+        root: &Path,
+        compress: Compress,
+        asciicast_version: AsciicastVersion,
+    ) -> PtySession {
+        let manager = Manager::for_test_with_version(root.to_owned(), compress, asciicast_version);
         let uid = Uid::current().as_raw();
         let mut session = PtySession::new(&manager, 7, uid, "bash".to_string(), 1_000).unwrap();
         session.stage_event(StagedEvent::Metadata {
@@ -461,8 +507,25 @@ mod test {
         assert!(final_path.exists());
         assert!(!unfinished_path_for(&final_path).exists());
         let content = String::from_utf8(read_cast_bytes(&final_path).unwrap()).unwrap();
-        assert!(content.contains(r#""version": 2"#));
+        assert!(content.contains(r#""version":2"#));
+        assert!(content.contains(r#""width":80,"height":24"#));
         assert!(content.contains("hello from unfinished recording"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_can_write_asciicast_v3_recording() {
+        let root = temp_root("v3-recording");
+        let session = write_test_session_with_version(&root, Compress::None, AsciicastVersion::V3);
+        let final_path = session.final_path.clone();
+
+        drop(session);
+
+        let content = String::from_utf8(read_cast_bytes(&final_path).unwrap()).unwrap();
+        assert!(content.contains(r#""version":3"#));
+        assert!(content.contains(r#""term":{"cols":80,"rows":24,"type":"xterm-256color"}"#));
+        assert!(content.contains(r#"[1.000999,"o","hello from unfinished recording"]"#));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -516,7 +579,7 @@ mod test {
         }
 
         let content = only_recording_content(&root);
-        assert!(content.contains(r#""width": 100, "height": 30"#));
+        assert!(content.contains(r#""width":100,"height":30"#));
         assert!(content.contains("before resize"));
         assert!(content.contains("after resize"));
 
@@ -552,7 +615,7 @@ mod test {
         }
 
         let content = only_recording_content(&root);
-        assert!(content.contains(r#""width": 0, "height": 0"#));
+        assert!(content.contains(r#""width":0,"height":0"#));
 
         let _ = fs::remove_dir_all(root);
     }

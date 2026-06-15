@@ -15,6 +15,8 @@ pub struct DaemonConfig {
     pub root: String,
     /// Compression
     pub compress: Compress,
+    /// Asciicast file format version for new recordings.
+    pub asciicast_version: AsciicastVersion,
     /// Excluded comms
     pub excluded_comms: HashSet<Comm>,
     /// Soft budget
@@ -31,6 +33,8 @@ pub(crate) struct DaemonConfigFile {
     pub mode: Option<Mode>,
     /// Compression
     pub compress: Option<Compress>,
+    /// Asciicast file format version for new recordings.
+    pub asciicast_version: Option<AsciicastVersion>,
     /// Excluded comms
     pub excluded_comms: Option<HashSet<Comm>>,
     /// Soft budget
@@ -44,6 +48,7 @@ impl DaemonConfigFile {
             uids: override_config.uids.or(self.uids),
             mode: override_config.mode.or(self.mode),
             compress: override_config.compress.or(self.compress),
+            asciicast_version: override_config.asciicast_version.or(self.asciicast_version),
             excluded_comms: override_config.excluded_comms.or(self.excluded_comms),
             soft_budget: override_config.soft_budget.or(self.soft_budget),
         }
@@ -54,6 +59,13 @@ impl DaemonConfigFile {
 pub enum Compress {
     None,
     Zstd(Option<i32>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AsciicastVersion {
+    V2,
+    V3,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -74,6 +86,7 @@ impl DaemonConfig {
             mode: config.mode.unwrap_or(Mode::BlockList),
             root,
             compress: config.compress.unwrap_or(Compress::Zstd(None)),
+            asciicast_version: config.asciicast_version.unwrap_or(AsciicastVersion::V2),
             excluded_comms: config.excluded_comms.unwrap_or_else(default_excluded_comms),
             soft_budget: config.soft_budget.unwrap_or(52_428_800),
         }
@@ -179,6 +192,7 @@ mod tests {
         assert_eq!(config.uids, HashSet::from([0]));
         assert!(matches!(config.mode, Mode::BlockList));
         assert!(matches!(config.compress, Compress::Zstd(None)));
+        assert_eq!(config.asciicast_version, AsciicastVersion::V2);
         assert_eq!(config.soft_budget, 52_428_800);
         assert!(config
             .excluded_comms
@@ -189,6 +203,7 @@ mod tests {
             uids: Some(HashSet::from([1000])),
             mode: Some(Mode::AllowList),
             compress: Some(Compress::None),
+            asciicast_version: Some(AsciicastVersion::V3),
             excluded_comms: Some(HashSet::from([Comm::from_name("bash").unwrap()])),
             soft_budget: Some(42),
         };
@@ -198,6 +213,7 @@ mod tests {
         assert_eq!(config.uids, HashSet::from([1000]));
         assert!(matches!(config.mode, Mode::AllowList));
         assert!(matches!(config.compress, Compress::None));
+        assert_eq!(config.asciicast_version, AsciicastVersion::V3);
         assert_eq!(
             config.excluded_comms,
             HashSet::from([Comm::from_name("bash").unwrap()])
@@ -212,6 +228,7 @@ mod tests {
             uids: Some(HashSet::from([1000])),
             mode: Some(Mode::BlockList),
             compress: Some(Compress::Zstd(Some(3))),
+            asciicast_version: Some(AsciicastVersion::V3),
             excluded_comms: Some(HashSet::from([Comm::from_name("sudo").unwrap()])),
             soft_budget: Some(100),
         };
@@ -220,6 +237,7 @@ mod tests {
             uids: Some(HashSet::from([2000])),
             mode: Some(Mode::AllowList),
             compress: None,
+            asciicast_version: None,
             excluded_comms: None,
             soft_budget: Some(200),
         };
@@ -230,6 +248,7 @@ mod tests {
         assert_eq!(merged.uids.unwrap(), HashSet::from([2000]));
         assert!(matches!(merged.mode.unwrap(), Mode::AllowList));
         assert!(matches!(merged.compress.unwrap(), Compress::Zstd(Some(3))));
+        assert_eq!(merged.asciicast_version.unwrap(), AsciicastVersion::V3);
         assert_eq!(
             merged.excluded_comms.unwrap(),
             HashSet::from([Comm::from_name("sudo").unwrap()])

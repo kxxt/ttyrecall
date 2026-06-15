@@ -25,7 +25,7 @@ use rustix::{
     process::{Gid as RustixGid, Uid as RustixUid},
 };
 
-use crate::daemon::Compress;
+use crate::daemon::{AsciicastVersion, Compress};
 
 pub(crate) const RECORDING_UNFINISHED_SUFFIX: &str = ".unfinished";
 
@@ -37,6 +37,7 @@ pub struct Manager {
     group: Option<Group>,
     directory_owner: Uid,
     pub compress: Compress,
+    pub asciicast_version: AsciicastVersion,
 }
 
 #[derive(Debug)]
@@ -53,7 +54,12 @@ impl Manager {
     /// Create a new manager,
     /// It could be opened in exclusive mode to ensure two daemons won't step
     /// on each other's toes.
-    pub fn new(dir: String, _exclusive: bool, compress: Compress) -> color_eyre::Result<Self> {
+    pub fn new(
+        dir: String,
+        _exclusive: bool,
+        compress: Compress,
+        asciicast_version: AsciicastVersion,
+    ) -> color_eyre::Result<Self> {
         let root = PathBuf::from(dir);
         let meta = root
             .symlink_metadata()
@@ -88,6 +94,7 @@ impl Manager {
             group,
             directory_owner: Uid::from_raw(0),
             compress,
+            asciicast_version,
         })
     }
 
@@ -224,6 +231,15 @@ impl Manager {
 
     #[cfg(test)]
     pub(crate) fn for_test(root: PathBuf, compress: Compress) -> Self {
+        Self::for_test_with_version(root, compress, AsciicastVersion::V2)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_version(
+        root: PathBuf,
+        compress: Compress,
+        asciicast_version: AsciicastVersion,
+    ) -> Self {
         let root_handle = Root::open(&root)
             .expect("test storage root must exist")
             .with_resolver_flags(ResolverFlags::NO_SYMLINKS);
@@ -233,6 +249,7 @@ impl Manager {
             group: None,
             directory_owner: Uid::current(),
             compress,
+            asciicast_version,
         }
     }
 }

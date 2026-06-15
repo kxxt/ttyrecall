@@ -38,7 +38,12 @@ pub struct Daemon {
 impl Daemon {
     pub fn new(config: DaemonConfig) -> color_eyre::Result<Self> {
         Ok(Self {
-            manager: Rc::new(Manager::new(config.root, true, config.compress)?),
+            manager: Rc::new(Manager::new(
+                config.root,
+                true,
+                config.compress,
+                config.asciicast_version,
+            )?),
             mode: config.mode,
             uids: {
                 let mut uids = config.uids;

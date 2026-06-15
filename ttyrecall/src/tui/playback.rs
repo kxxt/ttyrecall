@@ -2,36 +2,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use color_eyre::eyre::{bail, WrapErr};
-use serde::Deserialize;
+use color_eyre::eyre::WrapErr;
 
-use crate::catalog;
+use crate::{
+    asciicast::{self, CastEvent, CastHeader},
+    catalog,
+};
 
 const LOOP_HOLD_SECS: f64 = 1.0;
-
-#[derive(Debug, Deserialize)]
-struct CastHeader {
-    version: u32,
-    width: Option<u16>,
-    height: Option<u16>,
-}
-
-#[derive(Debug)]
-enum CastEvent {
-    Output { time: f64, data: String },
-    Resize { time: f64, width: u16, height: u16 },
-    Other { time: f64 },
-}
-
-impl CastEvent {
-    fn time(&self) -> f64 {
-        match self {
-            Self::Output { time, .. } => *time,
-            Self::Resize { time, .. } => *time,
-            Self::Other { time } => *time,
-        }
-    }
-}
 
 pub(super) struct Playback {
     pub(super) title: String,
@@ -82,8 +60,8 @@ impl Playback {
         let bytes = recording
             .read_cast_bytes()
             .wrap_err_with(|| format!("failed to read {source}"))?;
-        let (header, events) =
-            parse_cast_bytes(&bytes).wrap_err_with(|| format!("invalid asciicast {source}"))?;
+        let (header, events) = asciicast::parse_cast_bytes(&bytes)
+            .wrap_err_with(|| format!("invalid asciicast {source}"))?;
         Self::from_cast(header, events, title, start_at)
     }
 
@@ -93,9 +71,9 @@ impl Playback {
         title: String,
         start_at: f64,
     ) -> color_eyre::Result<Self> {
-        let rows = header.height.unwrap_or(24).clamp(1, 200);
-        let cols = header.width.unwrap_or(80).clamp(1, 400);
-        let start_offset = normalize_time(start_at);
+        let rows = header.rows().unwrap_or(24).clamp(1, 200);
+        let cols = header.cols().unwrap_or(80).clamp(1, 400);
+        let start_offset = asciicast::normalize_time(start_at);
         let now = Instant::now();
         let mut playback = Self {
             title,
@@ -119,7 +97,7 @@ impl Playback {
 
         let elapsed = self.elapsed_at(now);
         while let Some(event) = self.events.get(self.next_event) {
-            let event_time = normalize_time(event.time());
+            let event_time = asciicast::normalize_time(event.time());
             if event_time > elapsed {
                 break;
             }
@@ -161,11 +139,11 @@ impl Playback {
     }
 
     fn seek_to(&mut self, target_time: f64, now: Instant) {
-        let target_time = normalize_time(target_time).min(self.last_event_time());
+        let target_time = asciicast::normalize_time(target_time).min(self.last_event_time());
         self.parser = vt100::Parser::new(self.parser_rows, self.parser_cols, 0);
         self.next_event = 0;
         while self.next_event < self.events.len() {
-            let event_time = normalize_time(self.events[self.next_event].time());
+            let event_time = asciicast::normalize_time(self.events[self.next_event].time());
             if event_time > target_time {
                 break;
             }
@@ -196,7 +174,7 @@ impl Playback {
     fn last_event_time(&self) -> f64 {
         self.events
             .last()
-            .map(|event| normalize_time(event.time()))
+            .map(|event| asciicast::normalize_time(event.time()))
             .unwrap_or(0.0)
     }
 }
@@ -205,82 +183,8 @@ impl Playback {
 fn load_cast(path: &Path) -> color_eyre::Result<(CastHeader, Vec<CastEvent>)> {
     let bytes = catalog::read_cast_bytes(path)
         .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    parse_cast_bytes(&bytes).wrap_err_with(|| format!("invalid asciicast {}", path.display()))
-}
-
-fn parse_cast_bytes(bytes: &[u8]) -> color_eyre::Result<(CastHeader, Vec<CastEvent>)> {
-    let text = std::str::from_utf8(bytes).wrap_err("recording is not valid UTF-8")?;
-    let mut lines = text.lines();
-    let header_line = lines
-        .next()
-        .ok_or_else(|| color_eyre::eyre::eyre!("empty asciicast file"))?;
-    let header: CastHeader = serde_json::from_str(header_line).wrap_err("invalid header")?;
-    if header.version != 2 {
-        bail!(
-            "unsupported asciicast version {}; only v2 is supported",
-            header.version
-        );
-    }
-
-    let mut events = Vec::new();
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        events.push(parse_cast_event(line)?);
-    }
-    Ok((header, events))
-}
-
-fn parse_cast_event(line: &str) -> color_eyre::Result<CastEvent> {
-    let value: serde_json::Value = serde_json::from_str(line)?;
-    let arr = value
-        .as_array()
-        .ok_or_else(|| color_eyre::eyre::eyre!("event is not a JSON array"))?;
-    if arr.len() < 2 {
-        bail!("event array is too short");
-    }
-    let time = arr[0]
-        .as_f64()
-        .ok_or_else(|| color_eyre::eyre::eyre!("event time is not a number"))?;
-    let kind = arr[1]
-        .as_str()
-        .ok_or_else(|| color_eyre::eyre::eyre!("event kind is not a string"))?;
-
-    match kind {
-        "o" => Ok(CastEvent::Output {
-            time,
-            data: arr
-                .get(2)
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string(),
-        }),
-        "r" => {
-            let raw = arr
-                .get(2)
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| color_eyre::eyre::eyre!("resize payload missing"))?;
-            let (width, height) = parse_size(raw)
-                .ok_or_else(|| color_eyre::eyre::eyre!("invalid resize payload: {raw}"))?;
-            Ok(CastEvent::Resize {
-                time,
-                width,
-                height,
-            })
-        }
-        _ => Ok(CastEvent::Other { time }),
-    }
-}
-
-fn parse_size(raw: &str) -> Option<(u16, u16)> {
-    let mut parts = raw.split('x');
-    let width = parts.next()?.parse().ok()?;
-    let height = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((width, height))
+    asciicast::parse_cast_bytes(&bytes)
+        .wrap_err_with(|| format!("invalid asciicast {}", path.display()))
 }
 
 fn resize_parser(parser: &mut vt100::Parser, width: u16, height: u16) {
@@ -290,17 +194,11 @@ fn resize_parser(parser: &mut vt100::Parser, width: u16, height: u16) {
     parser.set_size(height.clamp(1, 200), width.clamp(1, 400));
 }
 
-fn normalize_time(time: f64) -> f64 {
-    if time.is_finite() && time >= 0.0 {
-        time
-    } else {
-        0.0
-    }
-}
-
 fn start_instant(now: Instant, offset: f64) -> Instant {
-    now.checked_sub(std::time::Duration::from_secs_f64(normalize_time(offset)))
-        .unwrap_or(now)
+    now.checked_sub(std::time::Duration::from_secs_f64(
+        asciicast::normalize_time(offset),
+    ))
+    .unwrap_or(now)
 }
 
 #[cfg(test)]
@@ -315,10 +213,10 @@ mod tests {
 [0.5,"i","ignored"]
 "#;
 
-        let (header, events) = parse_cast_bytes(cast).unwrap();
+        let (header, events) = asciicast::parse_cast_bytes(cast).unwrap();
         assert_eq!(header.version, 2);
-        assert_eq!(header.width, Some(80));
-        assert_eq!(header.height, Some(24));
+        assert_eq!(header.cols(), Some(80));
+        assert_eq!(header.rows(), Some(24));
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], CastEvent::Output { .. }));
         assert!(matches!(
@@ -332,18 +230,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_asciicast_v3_relative_events() {
+        let cast = br#"{"version":3,"term":{"cols":80,"rows":24}}
+[0.2,"o","hello"]
+[0.4,"o"," world"]
+"#;
+
+        let (header, events) = asciicast::parse_cast_bytes(cast).unwrap();
+
+        assert_eq!(header.version, 3);
+        assert_eq!(header.cols(), Some(80));
+        assert_eq!(header.rows(), Some(24));
+        assert!(
+            matches!(events[0], CastEvent::Output { time, .. } if (time - 0.2).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(events[1], CastEvent::Output { time, .. } if (time - 0.6).abs() < f64::EPSILON)
+        );
+    }
+
+    #[test]
     fn rejects_unsupported_asciicast_version() {
         let cast = br#"{"version":1}
 [0.2,"o","hello"]
 "#;
 
-        let err = parse_cast_bytes(cast).unwrap_err().to_string();
+        let err = asciicast::parse_cast_bytes(cast).unwrap_err().to_string();
         assert!(err.contains("unsupported asciicast version"));
     }
 
     #[test]
     fn playback_renders_due_output_and_loops() {
-        let (_, events) = parse_cast_bytes(
+        let (_, events) = asciicast::parse_cast_bytes(
             br#"{"version":2,"width":80,"height":24}
 [0.0,"o","first"]
 "#,

@@ -31,7 +31,7 @@ Only replay recordings from sources you trust. Raw terminal playback through `tt
 
 # Current Status
 
-- [x] Record tty in the background to asciicast-v2 format
+- [x] Record tty in the background to configurable asciicast-v2 or asciicast-v3 format
 - [x] Save the recordings in a directory structure that makes sense
 - [x] DAC so that users by default can only access their own recordings. (recording file is owned by `user:ttyrecall`)
 - [x] Control which users' tty are recorded via a blocklist or allowlist
@@ -70,6 +70,17 @@ The zstd compressed recordings can be played by the following command:
 ```bash
 zstd -cd /var/lib/ttyrecall/1000/2024/10/03/konsole-pty8-12:19.cast.zst | asciinema play -
 ```
+
+## Asciicast Format
+
+New recordings default to asciicast v2. You can opt into asciicast v3 with:
+
+```toml
+[daemon]
+asciicast_version = "v3"
+```
+
+Search works with both formats, but v3 has a performance tradeoff: event times are intervals since the previous event, so the search code must scan each matched recording to recover absolute timestamps. `ttyrecall` groups matches by file and scans each matched recording once, but v2 remains the default because its matched event lines contain absolute offsets directly.
 
 # TODO
 

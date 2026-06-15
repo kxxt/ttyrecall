@@ -253,7 +253,6 @@ fn recording_rel_path_from_id(id: &str) -> Option<PathBuf> {
     Some(rel_path)
 }
 
-#[cfg(test)]
 pub(crate) fn read_cast_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     let compressed = path.extension().and_then(|s| s.to_str()) == Some("zst");
     decode_cast_bytes(std::fs::read(path)?, compressed)

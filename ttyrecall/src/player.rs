@@ -6,23 +6,10 @@ use std::{
 };
 
 use color_eyre::eyre::{bail, WrapErr};
-use serde::Deserialize;
+
+use crate::asciicast::{self, CastEvent, CastHeader, RawCastEvent};
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
-
-#[derive(Debug, Deserialize)]
-struct Header {
-    version: u32,
-    width: Option<u16>,
-    height: Option<u16>,
-}
-
-#[derive(Debug)]
-enum Event {
-    Output { time: f64, data: String },
-    Resize { time: f64, width: u16, height: u16 },
-    Other { time: f64 },
-}
 
 pub async fn play(files: Vec<PathBuf>) -> color_eyre::Result<()> {
     for path in files {
@@ -40,17 +27,11 @@ async fn play_one(path: &Path) -> color_eyre::Result<()> {
     if bytes == 0 {
         bail!("Empty asciicast file: {path:?}");
     }
-    let header: Header = serde_json::from_str(trim_line(&header_line))
+    let header = CastHeader::parse(trim_line(&header_line))
         .wrap_err_with(|| format!("invalid asciicast header in {path:?}"))?;
-    if header.version != 2 {
-        bail!(
-            "Unsupported asciicast version {} in {path:?}. Only v2 is supported.",
-            header.version
-        );
-    }
 
     let mut out = io::stdout();
-    if let (Some(width), Some(height)) = (header.width, header.height) {
+    if let (Some(width), Some(height)) = (header.cols(), header.rows()) {
         apply_resize(&mut out, width, height)?;
         out.flush()?;
     }
@@ -66,33 +47,30 @@ async fn play_one(path: &Path) -> color_eyre::Result<()> {
             break;
         }
         let trimmed = trim_line(&line);
-        if trimmed.is_empty() {
+        if asciicast::should_skip_event_line(trimmed) {
             continue;
         }
-        let event = parse_event(trimmed)
+        let raw_event = RawCastEvent::parse(trimmed)
             .wrap_err_with(|| format!("invalid asciicast event in {path:?}: {trimmed}"))?;
 
-        let event_time = normalize_time(event.time(), last_time);
-        let delta = if event_time > last_time {
-            event_time - last_time
-        } else {
-            0.0
-        };
-        last_time = last_time.max(event_time);
+        let delta = asciicast::event_delay(header.timing(), raw_event.time, &mut last_time);
         if delta > 0.0 {
             tokio::time::sleep(Duration::from_secs_f64(delta)).await;
         }
+        let event = raw_event
+            .into_absolute_event(last_time)
+            .wrap_err_with(|| format!("invalid asciicast event in {path:?}: {trimmed}"))?;
 
         match event {
-            Event::Output { data, .. } => {
+            CastEvent::Output { data, .. } => {
                 out.write_all(data.as_bytes())?;
                 out.flush()?;
             }
-            Event::Resize { width, height, .. } => {
+            CastEvent::Resize { width, height, .. } => {
                 apply_resize(&mut out, width, height)?;
                 out.flush()?;
             }
-            Event::Other { .. } => {}
+            CastEvent::Other { .. } => {}
         }
     }
     Ok(())
@@ -102,69 +80,11 @@ fn trim_line(line: &str) -> &str {
     line.trim_end_matches(['\r', '\n'])
 }
 
-fn parse_event(line: &str) -> color_eyre::Result<Event> {
-    let value: serde_json::Value = serde_json::from_str(line)?;
-    let arr = value
-        .as_array()
-        .ok_or_else(|| color_eyre::eyre::eyre!("event is not a JSON array"))?;
-    if arr.len() < 2 {
-        bail!("event array is too short");
-    }
-    let time = arr[0]
-        .as_f64()
-        .ok_or_else(|| color_eyre::eyre::eyre!("event time is not a number"))?;
-    let kind = arr[1]
-        .as_str()
-        .ok_or_else(|| color_eyre::eyre::eyre!("event kind is not a string"))?;
-    match kind {
-        "o" => {
-            let data = arr
-                .get(2)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_owned();
-            Ok(Event::Output { time, data })
-        }
-        "r" => {
-            let raw = arr
-                .get(2)
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| color_eyre::eyre::eyre!("resize payload missing"))?;
-            let (width, height) = parse_size(raw)
-                .ok_or_else(|| color_eyre::eyre::eyre!("invalid resize payload: {raw}"))?;
-            Ok(Event::Resize {
-                time,
-                width,
-                height,
-            })
-        }
-        _ => Ok(Event::Other { time }),
-    }
-}
-
-fn parse_size(raw: &str) -> Option<(u16, u16)> {
-    let mut parts = raw.split('x');
-    let width = parts.next()?.parse().ok()?;
-    let height = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((width, height))
-}
-
 fn apply_resize(out: &mut dyn Write, width: u16, height: u16) -> io::Result<()> {
     if width == 0 || height == 0 {
         return Ok(());
     }
     write!(out, "\x1b[8;{};{}t", height, width)
-}
-
-fn normalize_time(time: f64, last_time: f64) -> f64 {
-    if time.is_finite() && time >= 0.0 {
-        time
-    } else {
-        last_time
-    }
 }
 
 fn open_reader(path: &Path) -> color_eyre::Result<BufReader<Box<dyn Read>>> {
@@ -192,16 +112,6 @@ fn is_zstd_file(path: &Path, file: &mut File) -> color_eyre::Result<bool> {
     Ok(ext_is_zstd || magic_is_zstd)
 }
 
-impl Event {
-    fn time(&self) -> f64 {
-        match self {
-            Event::Output { time, .. } => *time,
-            Event::Resize { time, .. } => *time,
-            Event::Other { time } => *time,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,47 +135,62 @@ mod tests {
 
     #[test]
     fn parses_output_resize_and_other_events() {
-        let output = parse_event(r#"[1.25,"o","hello"]"#).unwrap();
+        let output = RawCastEvent::parse(r#"[1.25,"o","hello"]"#)
+            .unwrap()
+            .into_absolute_event(1.25)
+            .unwrap();
         assert!(matches!(
             output,
-            Event::Output {
+            CastEvent::Output {
                 time: 1.25,
                 ref data
             } if data == "hello"
         ));
         assert_eq!(output.time(), 1.25);
 
-        let resize = parse_event(r#"[2.5,"r","120x40"]"#).unwrap();
+        let resize = RawCastEvent::parse(r#"[2.5,"r","120x40"]"#)
+            .unwrap()
+            .into_absolute_event(2.5)
+            .unwrap();
         assert!(matches!(
             resize,
-            Event::Resize {
+            CastEvent::Resize {
                 time: 2.5,
                 width: 120,
                 height: 40
             }
         ));
 
-        let other = parse_event(r#"[3.0,"i","input"]"#).unwrap();
-        assert!(matches!(other, Event::Other { time: 3.0 }));
+        let other = RawCastEvent::parse(r#"[3.0,"i","input"]"#)
+            .unwrap()
+            .into_absolute_event(3.0)
+            .unwrap();
+        assert!(matches!(other, CastEvent::Other { time: 3.0 }));
     }
 
     #[test]
     fn parse_event_rejects_invalid_shapes() {
-        assert!(parse_event(r#"{"time":1}"#).is_err());
-        assert!(parse_event(r#"[1.0]"#).is_err());
-        assert!(parse_event(r#"["bad","o","x"]"#).is_err());
-        assert!(parse_event(r#"[1.0,2,"x"]"#).is_err());
-        assert!(parse_event(r#"[1.0,"r"]"#).is_err());
-        assert!(parse_event(r#"[1.0,"r","120"]"#).is_err());
+        assert!(RawCastEvent::parse(r#"{"time":1}"#).is_err());
+        assert!(RawCastEvent::parse(r#"[1.0]"#).is_err());
+        assert!(RawCastEvent::parse(r#"["bad","o","x"]"#).is_err());
+        assert!(RawCastEvent::parse(r#"[1.0,2,"x"]"#).is_err());
+        assert!(RawCastEvent::parse(r#"[1.0,"r"]"#)
+            .unwrap()
+            .into_absolute_event(1.0)
+            .is_err());
+        assert!(RawCastEvent::parse(r#"[1.0,"r","120"]"#)
+            .unwrap()
+            .into_absolute_event(1.0)
+            .is_err());
     }
 
     #[test]
     fn parse_size_accepts_exact_width_by_height() {
-        assert_eq!(parse_size("80x24"), Some((80, 24)));
-        assert_eq!(parse_size("0x24"), Some((0, 24)));
-        assert_eq!(parse_size("80"), None);
-        assert_eq!(parse_size("80x24x1"), None);
-        assert_eq!(parse_size("widextall"), None);
+        assert_eq!(asciicast::parse_size("80x24"), Some((80, 24)));
+        assert_eq!(asciicast::parse_size("0x24"), Some((0, 24)));
+        assert_eq!(asciicast::parse_size("80"), None);
+        assert_eq!(asciicast::parse_size("80x24x1"), None);
+        assert_eq!(asciicast::parse_size("widextall"), None);
     }
 
     #[test]
@@ -281,11 +206,25 @@ mod tests {
     }
 
     #[test]
-    fn normalize_time_uses_last_valid_time_for_invalid_values() {
-        assert_eq!(normalize_time(1.5, 1.0), 1.5);
-        assert_eq!(normalize_time(-1.0, 1.0), 1.0);
-        assert_eq!(normalize_time(f64::NAN, 1.0), 1.0);
-        assert_eq!(normalize_time(f64::INFINITY, 1.0), 1.0);
+    fn event_delay_handles_absolute_and_relative_timing() {
+        let mut last = 1.0;
+        assert_eq!(
+            asciicast::event_delay(asciicast::Timing::Absolute, 1.5, &mut last),
+            0.5
+        );
+        assert_eq!(last, 1.5);
+        assert_eq!(
+            asciicast::event_delay(asciicast::Timing::Absolute, 1.0, &mut last),
+            0.0
+        );
+        assert_eq!(last, 1.5);
+
+        let mut last = 1.0;
+        assert_eq!(
+            asciicast::event_delay(asciicast::Timing::Relative, 0.25, &mut last),
+            0.25
+        );
+        assert_eq!(last, 1.25);
     }
 
     #[test]

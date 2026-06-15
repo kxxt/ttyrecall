@@ -193,7 +193,7 @@ fn from_file_config(file_config: AppConfigFile) -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::{Compress, Mode};
+    use crate::daemon::{AsciicastVersion, Compress, Mode};
 
     #[test]
     fn minimal_common_config_uses_section_defaults() {
@@ -217,6 +217,7 @@ compress = "zstd"
 
         assert_eq!(daemon.root, "/tmp/ttyrecall");
         assert!(matches!(daemon.compress, Compress::Zstd(None)));
+        assert_eq!(daemon.asciicast_version, AsciicastVersion::V2);
         assert!(matches!(daemon.mode, Mode::BlockList));
         assert_eq!(daemon.uids, std::collections::HashSet::from([0]));
         assert_eq!(daemon.soft_budget, 52_428_800);
@@ -235,6 +236,7 @@ compress = "zstd"
         assert_eq!(config.web.bind.as_deref(), Some("127.0.0.1:8450"));
         assert_eq!(config.search.ripgrep_path, "rg");
         assert_eq!(config.search.max_results, 50);
+        assert_eq!(config.daemon.asciicast_version, AsciicastVersion::V2);
     }
 
     #[test]
@@ -245,6 +247,7 @@ root = "/var/lib/ttyrecall"
 
 [daemon]
 compress = "zstd"
+asciicast_version = "v3"
 soft_budget = 10
 
 [web]
@@ -281,6 +284,7 @@ max_results = 5
         assert_eq!(config.web.pam_service.as_deref(), Some("login"));
         assert_eq!(config.web.session_ttl_minutes, Some(5));
         assert_eq!(config.daemon.soft_budget, 10);
+        assert_eq!(config.daemon.asciicast_version, AsciicastVersion::V3);
         assert!(config.search.enabled);
         assert_eq!(config.search.ripgrep_path, "/usr/bin/rg");
         assert_eq!(config.search.max_results, 5);

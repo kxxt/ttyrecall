@@ -14,6 +14,14 @@ root = "/var/lib/ttyrecall"
 # - zstd:$level : zstd with custom compression level
 compress = "zstd"
 
+# Asciicast format for new recordings.
+# - v2: default. Event timestamps are absolute offsets, so search can read a
+#       matched line's timestamp directly.
+# - v3: Event timestamps are intervals since the previous event.
+#       Search still works, but timestamp recovery must scan the matched
+#       recording to sum intervals up to each match, which is slower than v2.
+asciicast_version = "v2"
+
 # Mode
 # - blocklist: Record all pty sessions by default, but sessions from listed users/uids won't be recorded
 # - allowlist: Only record the pty sessions from listed users/uids

@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -6,11 +7,16 @@ use std::{
 use color_eyre::eyre::{bail, WrapErr};
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{
-    is_recording_file_name, recording_id_for_rel_path, recording_info, storage_rel_path,
+use crate::{
+    asciicast,
+    catalog::{
+        is_recording_file_name, read_cast_bytes, recording_id_for_rel_path, recording_info,
+        storage_rel_path, RecordingInfo,
+    },
 };
 
 pub(crate) const MAX_SEARCH_QUERY_LEN: usize = 256;
+const FIRST_EVENT_LINE_NUMBER: u64 = 2;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RipgrepSearchConfig {
@@ -42,6 +48,7 @@ struct RgMessage {
 struct RgData {
     path: Option<RgText>,
     lines: Option<RgText>,
+    line_number: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,8 +56,15 @@ struct RgText {
     text: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct CastEvent(f64, String, Option<String>);
+#[derive(Debug)]
+struct PendingMatch {
+    ordinal: usize,
+    path: PathBuf,
+    rel_path: PathBuf,
+    info: RecordingInfo,
+    line: String,
+    line_number: Option<u64>,
+}
 
 pub(crate) fn search_recordings(
     storage_root: &Path,
@@ -109,7 +123,12 @@ fn parse_rg_json(
     bytes: &[u8],
     max_results: usize,
 ) -> color_eyre::Result<Vec<SearchResult>> {
+    if max_results == 0 {
+        return Ok(Vec::new());
+    }
+
     let text = std::str::from_utf8(bytes).wrap_err("ripgrep output is not valid UTF-8")?;
+    let mut pending = Vec::new();
     let mut results = Vec::new();
 
     for line in text.lines() {
@@ -127,23 +146,40 @@ fn parse_rg_json(
             continue;
         };
         let path = PathBuf::from(path);
-        if let Some(result) = result_from_match(storage_root, uid, &path, &match_line) {
-            results.push(result);
+        if let Some(candidate) = pending_match(
+            storage_root,
+            uid,
+            &path,
+            &match_line,
+            data.line_number,
+            pending.len(),
+        ) {
+            pending.push(candidate);
+        }
+
+        if pending.len() >= max_results {
+            append_results_from_matches(&mut results, std::mem::take(&mut pending), max_results)?;
             if results.len() >= max_results {
                 break;
             }
         }
     }
 
+    if results.len() < max_results && !pending.is_empty() {
+        append_results_from_matches(&mut results, pending, max_results)?;
+    }
+
     Ok(results)
 }
 
-fn result_from_match(
+fn pending_match(
     storage_root: &Path,
     uid: u32,
     path: &Path,
     line: &str,
-) -> Option<SearchResult> {
+    line_number: Option<u64>,
+    ordinal: usize,
+) -> Option<PendingMatch> {
     let file_name = path.file_name()?.to_str()?;
     if !is_recording_file_name(file_name) {
         return None;
@@ -156,27 +192,145 @@ fn result_from_match(
 
     let user_root = storage_root.join(uid.to_string());
     let info = recording_info(&user_root, path)?;
-    let event = parse_output_event(line.trim()).ok()??;
-    let timestamp = normalize_time(event.0);
-    Some(SearchResult {
-        recording_id: recording_id_for_rel_path(&rel_path),
-        name: info.name,
-        display: info.display,
-        date: info.date,
-        size: info.size,
-        compressed: info.compressed,
-        timestamp,
-        timestamp_ms: timestamp_to_ms(timestamp),
-        text: searchable_text(event.2.as_deref().unwrap_or_default()),
+    Some(PendingMatch {
+        ordinal,
+        path: path.to_path_buf(),
+        rel_path,
+        info,
+        line: line.to_string(),
+        line_number,
     })
 }
 
-fn parse_output_event(line: &str) -> color_eyre::Result<Option<CastEvent>> {
-    let event: CastEvent = serde_json::from_str(line)?;
-    if event.1 != "o" {
-        return Ok(None);
+fn results_from_matches(
+    pending: Vec<PendingMatch>,
+    max_results: usize,
+) -> color_eyre::Result<Vec<SearchResult>> {
+    let mut by_path: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    for (index, candidate) in pending.iter().enumerate() {
+        by_path
+            .entry(candidate.path.clone())
+            .or_default()
+            .push(index);
     }
-    Ok(Some(event))
+
+    let mut resolved: HashMap<usize, (f64, String)> = HashMap::new();
+    let mut resolved_paths = HashSet::new();
+    let mut results = Vec::new();
+
+    for candidate in &pending {
+        if resolved_paths.insert(&candidate.path) {
+            let indices = by_path
+                .get(&candidate.path)
+                .expect("candidate path was indexed");
+            let bytes = read_cast_bytes(&candidate.path).wrap_err_with(|| {
+                format!("failed to read recording {}", candidate.path.display())
+            })?;
+            for (index, output) in output_events_for_matches(&bytes, &pending, indices)? {
+                resolved.insert(index, output);
+            }
+        }
+
+        let Some((timestamp, text)) = resolved.remove(&candidate.ordinal) else {
+            continue;
+        };
+        let timestamp = asciicast::normalize_time(timestamp);
+        results.push(search_result(candidate, timestamp, text));
+        if results.len() >= max_results {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+fn append_results_from_matches(
+    results: &mut Vec<SearchResult>,
+    pending: Vec<PendingMatch>,
+    max_results: usize,
+) -> color_eyre::Result<()> {
+    let remaining = max_results.saturating_sub(results.len());
+    if remaining == 0 {
+        return Ok(());
+    }
+
+    results.extend(results_from_matches(pending, remaining)?);
+    Ok(())
+}
+
+fn search_result(candidate: &PendingMatch, timestamp: f64, text: String) -> SearchResult {
+    SearchResult {
+        recording_id: recording_id_for_rel_path(&candidate.rel_path),
+        name: candidate.info.name.clone(),
+        display: candidate.info.display.clone(),
+        date: candidate.info.date.clone(),
+        size: candidate.info.size,
+        compressed: candidate.info.compressed,
+        timestamp,
+        timestamp_ms: timestamp_to_ms(timestamp),
+        text: searchable_text(&text),
+    }
+}
+
+fn output_events_for_matches(
+    bytes: &[u8],
+    pending: &[PendingMatch],
+    indices: &[usize],
+) -> color_eyre::Result<Vec<(usize, (f64, String))>> {
+    let mut targets_by_line_number: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut targets_by_line: HashMap<String, Vec<usize>> = HashMap::new();
+    for index in indices {
+        let candidate = &pending[*index];
+        if let Some(line_number) = candidate.line_number {
+            targets_by_line_number
+                .entry(line_number)
+                .or_default()
+                .push(candidate.ordinal);
+        } else {
+            targets_by_line
+                .entry(candidate.line.trim().to_string())
+                .or_default()
+                .push(candidate.ordinal);
+        }
+    }
+
+    let text = std::str::from_utf8(bytes).wrap_err("recording is not valid UTF-8")?;
+    let mut lines = text.lines();
+    let header_line = lines
+        .next()
+        .ok_or_else(|| color_eyre::eyre::eyre!("empty asciicast file"))?;
+    let header = asciicast::CastHeader::parse(header_line)?;
+    let mut elapsed = 0.0;
+    let mut resolved = Vec::new();
+
+    for (line_index, line) in lines.enumerate() {
+        let line_number = line_index as u64 + FIRST_EVENT_LINE_NUMBER;
+        let trimmed = line.trim();
+        if asciicast::should_skip_event_line(trimmed) {
+            continue;
+        }
+
+        let raw = asciicast::RawCastEvent::parse(trimmed)?;
+        let event_time = asciicast::absolute_event_time(header.timing(), raw.time, &mut elapsed);
+        if raw.is_output() {
+            let mut matching_ordinals = Vec::new();
+            if let Some(ordinals) = targets_by_line_number.get(&line_number) {
+                matching_ordinals.extend(ordinals.iter().copied());
+            }
+            if let Some(ordinals) = targets_by_line.get(trimmed) {
+                matching_ordinals.extend(ordinals.iter().copied());
+            }
+
+            let data = raw.data().unwrap_or_default().to_owned();
+            resolved.extend(
+                matching_ordinals
+                    .into_iter()
+                    .map(|ordinal| (ordinal, (event_time, data.clone()))),
+            );
+        }
+    }
+
+    Ok(resolved)
 }
 
 fn searchable_text(value: &str) -> String {
@@ -210,16 +364,8 @@ fn strip_ansi(value: &str) -> String {
     out
 }
 
-fn normalize_time(time: f64) -> f64 {
-    if time.is_finite() && time >= 0.0 {
-        time
-    } else {
-        0.0
-    }
-}
-
 fn timestamp_to_ms(time: f64) -> u64 {
-    (normalize_time(time) * 1000.0).round() as u64
+    (asciicast::normalize_time(time) * 1000.0).round() as u64
 }
 
 #[cfg(test)]
@@ -259,6 +405,66 @@ mod tests {
         assert_eq!(results[0].timestamp_ms, 1250);
         assert_eq!(results[0].text, "hello search");
         assert_eq!(results[0].display, "2026-06-06 10:30");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parse_rg_json_stops_after_max_results() {
+        let root = temp_root("max-results");
+        let first = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
+        let second = root.join("1000/2026/06/06/zsh-pty3-10:31.cast");
+        write_file(
+            &first,
+            r#"{"version":2}
+[1.0,"o","first match"]
+"#,
+        );
+        write_file(
+            &second,
+            r#"{"version":2}
+[2.0,"o","second match"]
+"#,
+        );
+        let rg = format!(
+            r#"{{"type":"match","data":{{"path":{{"text":"{}"}},"lines":{{"text":"[1.0,\"o\",\"first match\"]\n"}}}}}}
+{{"type":"match","data":{{"path":{{"text":"{}"}},"lines":{{"text":"[2.0,\"o\",\"second match\"]\n"}}}}}}
+not json
+"#,
+            first.display(),
+            second.display()
+        );
+
+        let results = parse_rg_json(&root, 1000, rg.as_bytes(), 2).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].text, "first match");
+        assert_eq!(results[1].text, "second match");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_v3_ripgrep_matches_with_relative_timestamps() {
+        let root = temp_root("parse-v3-rg");
+        let recording = root.join("1000/2026/06/06/bash-pty2-10:30.cast");
+        write_file(
+            &recording,
+            r#"{"version":3,"term":{"cols":80,"rows":24}}
+[1.25,"o","first"]
+[0.75,"o","hello search"]
+"#,
+        );
+        let rg = format!(
+            r#"{{"type":"match","data":{{"path":{{"text":"{}"}},"lines":{{"text":"[0.75,\"o\",\"hello search\"]\n"}},"line_number":3}}}}"#,
+            recording.display()
+        );
+
+        let results = parse_rg_json(&root, 1000, rg.as_bytes(), 10).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].timestamp_ms, 2000);
+        assert_eq!(results[0].text, "hello search");
 
         let _ = std::fs::remove_dir_all(root);
     }
