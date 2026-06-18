@@ -35,7 +35,6 @@ pub struct Manager {
     root: PathBuf,
     root_handle: Root,
     group: Option<Group>,
-    directory_owner: Uid,
     pub compress: Compress,
     pub asciicast_version: AsciicastVersion,
 }
@@ -70,10 +69,18 @@ impl Manager {
         if !meta.is_dir() {
             bail!("Storage root dir {root:?} does not exist or inaccessible.");
         }
-        // Check ownership. It should be owned by root:ttyrecall
+        // Check ownership. The storage root should be owned by root:ttyrecall.
+        // It also needs o+x so unprivileged users can traverse into their own
+        // uid-owned recording subtree without being able to list the root.
         let uid = Uid::from_raw(meta.st_uid());
         if !uid.is_root() {
             warn!("Storage root dir {root:?} is not owned by root user!");
+        }
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o001 == 0 {
+            warn!(
+                "Storage root dir {root:?} is not searchable by unprivileged users; ttyrecall browse may not be able to access per-user recordings"
+            );
         }
         let group = Group::from_name("ttyrecall")?;
         if let Some(group) = group.as_ref() {
@@ -92,7 +99,6 @@ impl Manager {
             root,
             root_handle,
             group,
-            directory_owner: Uid::from_raw(0),
             compress,
             asciicast_version,
         })
@@ -165,7 +171,7 @@ impl Manager {
         self.root_handle
             .mkdir_all(&date_dir_rel, &dir_permissions())?;
         for rel_path in date_dir_components(&uid_name, &year, &month, &day) {
-            self.set_dir_owner_mode(&rel_path)?;
+            self.set_dir_owner_mode(&rel_path, uid)?;
         }
 
         Ok((self.root.join(&date_dir_rel), date_dir_rel))
@@ -197,14 +203,14 @@ impl Manager {
         )
     }
 
-    fn set_dir_owner_mode(&self, rel_path: &Path) -> color_eyre::Result<()> {
+    fn set_dir_owner_mode(&self, rel_path: &Path, uid: Uid) -> color_eyre::Result<()> {
         let dir = self.root_handle.open_subpath(
             rel_path,
             OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY | OpenFlags::O_CLOEXEC,
         )?;
         rustix_fchown(
             &dir,
-            Some(rustix_uid(self.directory_owner)),
+            Some(rustix_uid(uid)),
             self.group.as_ref().map(|g| g.gid).map(rustix_gid),
         )?;
         fchmod(&dir, dir_mode())?;
@@ -247,7 +253,6 @@ impl Manager {
             root,
             root_handle,
             group: None,
-            directory_owner: Uid::current(),
             compress,
             asciicast_version,
         }
@@ -299,7 +304,10 @@ pub(crate) fn unfinished_path_for(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::symlink};
+    use std::{
+        fs,
+        os::unix::fs::{symlink, MetadataExt, PermissionsExt},
+    };
 
     use nix::unistd::Uid;
 
@@ -326,5 +334,46 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn rejects_symlink_inside_user_directory() {
+        let root = temp_root("symlink-year");
+        let outside = temp_root("symlink-year-outside");
+        let uid = Uid::current();
+        let year = Local::now().year().to_string();
+        fs::create_dir_all(root.join(uid.as_raw().to_string())).unwrap();
+        symlink(&outside, root.join(uid.as_raw().to_string()).join(year)).unwrap();
+
+        let manager = Manager::for_test(root.clone(), Compress::None);
+        assert!(manager.create_recording_file(uid, 1, "bash").is_err());
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn creates_user_owned_recording_subtree() {
+        let root = temp_root("user-owned");
+        let uid = Uid::current();
+        let manager = Manager::for_test(root.clone(), Compress::None);
+
+        let pending = manager.create_recording_file(uid, 1, "bash").unwrap();
+        drop(pending.file);
+
+        let mut path = root.clone();
+        for component in pending.final_rel_path.parent().unwrap().components() {
+            path.push(component.as_os_str());
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(metadata.uid(), uid.as_raw());
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o770);
+        }
+
+        let metadata = fs::metadata(&pending.unfinished_path).unwrap();
+        assert_eq!(metadata.uid(), uid.as_raw());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o660);
+
+        let _ = fs::remove_dir_all(root);
     }
 }

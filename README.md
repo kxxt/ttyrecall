@@ -33,7 +33,7 @@ Only replay recordings from sources you trust. Raw terminal playback through `tt
 
 - [x] Record tty in the background to configurable asciicast-v2 or asciicast-v3 format
 - [x] Save the recordings in a directory structure that makes sense
-- [x] DAC so that users by default can only access their own recordings. (recording file is owned by `user:ttyrecall`)
+- [x] DAC so that users by default can only access their own recordings. The storage root is `root:ttyrecall` and searchable, while per-user recording subtrees and files are owned by `user:ttyrecall`.
 - [x] Control which users' tty are recorded via a blocklist or allowlist
 - [x] Zstd compression
 - [x] A simple systemd service (See `ttyrecall-git` package).
